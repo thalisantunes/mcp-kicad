@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# saídas de fabricação geradas localmente
+production/
+*.gbr
+*.drl
+*-job.gbrjob
+
+# KiCad
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*.kicad_prl
+fp-info-cache
+_autosave-*
+*~
+
+# handoffs de sessão (locais)
+tickets/

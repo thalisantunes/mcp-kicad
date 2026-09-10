@@ -1,0 +1,87 @@
+(version 1)
+
+# JLCPCB — LIMITES ABSOLUTOS (com sobretaxa)
+#
+# ⚠️  Este perfil libera o que a fábrica CONSEGUE fazer, não o que ela faz
+#     de graça. Passar o DRC aqui NÃO significa que o pedido sai no preço
+#     de tabela. Use apenas quando o design não couber no perfil padrão e
+#     você aceitar o custo extra.
+#
+# Sobretaxas conhecidas ao operar nesta faixa:
+#   - trilha/espaço 3.0-3.5 mil em multicamada: +20% (4-8 camadas),
+#     +30% (10+ camadas) sobre o valor do pedido
+#   - furo de via < 0.3 mm com diâmetro <= 0.4 mm: taxa de via pequena
+#   - trilha fina em 2 camadas (< 5 mil): taxa de trilha fina
+#
+# Assume 1 oz (35 µm). Cobre pesado sobe todos os mínimos de trilha.
+#
+# Fontes e data de verificação: rules/jlcpcb/README.md
+
+# --- Trilhas ---------------------------------------------------------------
+# 1 oz: 0.10 mm em 1-2 camadas, 0.09 mm em multicamada.
+
+(rule "JLC ABS: largura mínima de trilha (externas)"
+	(constraint track_width (min 0.1mm))
+	(layer outer)
+	(condition "A.Type == 'track'"))
+
+(rule "JLC ABS: espaçamento mínimo entre trilhas (externas)"
+	(constraint clearance (min 0.1mm))
+	(layer outer)
+	(condition "A.Type == 'track' && B.Type == A.Type"))
+
+(rule "JLC ABS: largura mínima de trilha (internas)"
+	(constraint track_width (min 0.09mm))
+	(layer inner)
+	(condition "A.Type == 'track'"))
+
+(rule "JLC ABS: espaçamento mínimo entre trilhas (internas)"
+	(constraint clearance (min 0.09mm))
+	(layer inner)
+	(condition "A.Type == 'track' && B.Type == A.Type"))
+
+# --- Vias ------------------------------------------------------------------
+# Furo mínimo 0.15 mm (multicamada), diâmetro mínimo 0.25 mm.
+# Preferencial da fábrica: furo 0.2 mm.
+
+(rule "JLC ABS: furo mínimo de via"
+	(constraint hole_size (min 0.15mm))
+	(condition "A.Type == 'via'"))
+
+(rule "JLC ABS: diâmetro mínimo de via"
+	(constraint via_diameter (min 0.25mm))
+	(condition "A.Type == 'via'"))
+
+# (0.25 - 0.15) / 2 = 0.05 mm por lado. Extremamente apertado.
+(rule "JLC ABS: anel anular mínimo (por lado, derivado)"
+	(constraint annular_width (min 0.05mm))
+	(condition "A.isPlated()"))
+
+# --- Furos -----------------------------------------------------------------
+# Faixa de broca: 0.15-6.3 mm em multicamada, 0.3-6.3 mm em 1 camada.
+
+(rule "JLC ABS: furo mecânico (faixa fabricável)"
+	(constraint hole_size (min 0.15mm) (max 6.3mm)))
+
+(rule "JLC ABS: furo mínimo não metalizado (NPTH)"
+	(constraint hole_size (min 0.45mm))
+	(condition "A.Type == 'pad' && !A.isPlated()"))
+
+(rule "JLC ABS: furo mínimo castellated"
+	(constraint hole_size (min 0.5mm))
+	(condition "A.Type == 'pad' && A.Fabrication_Property == 'Castellated pad'"))
+
+# --- Silkscreen ------------------------------------------------------------
+# Estes são limites de legibilidade, não há tier "grátis" mais frouxo.
+
+(rule "JLC ABS: texto mínimo de silkscreen"
+	(constraint text_thickness (min 0.15mm))
+	(constraint text_height (min 1mm))
+	(layer "?.Silkscreen"))
+
+# --- Contorno da placa -----------------------------------------------------
+# Borda roteada: 0.2 mm. V-cut exige 0.4 mm (não coberto por esta regra).
+
+(rule "JLC ABS: cobre ao contorno da placa (borda roteada)"
+	(constraint edge_clearance (min 0.2mm))
+	(condition "A.Type == 'track' || A.Type == 'pad' || A.Type == 'via'"))

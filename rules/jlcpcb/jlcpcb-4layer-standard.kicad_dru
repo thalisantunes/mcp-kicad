@@ -1,0 +1,125 @@
+(version 1)
+
+# JLCPCB — 4 camadas, processo PADRÃO (sem sobretaxa)
+#
+# Diferença em relação ao perfil de 2 camadas: as camadas internas aceitam
+# trilha/espaço mais finos. A JLCPCB cobra +20% do valor do pedido (4-8
+# camadas) quando trilha OU espaço fica na faixa 3.0-3.5 mil. Por isso este
+# perfil trava as internas em 3.5 mil (0.09 mm), que é o limite da faixa
+# isenta, e mantém as externas em 5 mil (0.127 mm).
+#
+# Cobre: 1 oz (35 µm) nas externas. Multicamada 1 oz tem capacidade física
+# de 0.09/0.09 mm.
+#
+# Fontes e data de verificação: rules/jlcpcb/README.md
+
+# --- Trilhas ---------------------------------------------------------------
+
+(rule "JLC 4L: largura mínima de trilha (externas)"
+	(constraint track_width (min 0.127mm))
+	(layer outer)
+	(condition "A.Type == 'track'"))
+
+(rule "JLC 4L: espaçamento mínimo entre trilhas (externas)"
+	(constraint clearance (min 0.127mm))
+	(layer outer)
+	(condition "A.Type == 'track' && B.Type == A.Type"))
+
+(rule "JLC 4L: largura mínima de trilha (internas)"
+	(constraint track_width (min 0.09mm))
+	(layer inner)
+	(condition "A.Type == 'track'"))
+
+(rule "JLC 4L: espaçamento mínimo entre trilhas (internas)"
+	(constraint clearance (min 0.09mm))
+	(layer inner)
+	(condition "A.Type == 'track' && B.Type == A.Type"))
+
+# --- Vias ------------------------------------------------------------------
+# Mesma regra de sobretaxa das 2 camadas: furo >= 0.2 mm E diâmetro >= 0.45 mm
+# é isento. Multicamada permite furo de 0.15 mm, mas com custo extra.
+
+(rule "JLC 4L: furo mínimo de via"
+	(constraint hole_size (min 0.2mm))
+	(condition "A.Type == 'via'"))
+
+(rule "JLC 4L: diâmetro mínimo de via"
+	(constraint via_diameter (min 0.45mm))
+	(condition "A.Type == 'via'"))
+
+# Ver nota sobre derivação deste valor em jlcpcb-2layer-standard.kicad_dru
+(rule "JLC 4L: anel anular mínimo (por lado, derivado)"
+	(constraint annular_width (min 0.13mm))
+	(condition "A.isPlated()"))
+
+# --- Furos -----------------------------------------------------------------
+
+(rule "JLC 4L: furo mecânico (faixa fabricável)"
+	(constraint hole_size (min 0.2mm) (max 6.3mm)))
+
+(rule "JLC 4L: furo mínimo não metalizado (NPTH)"
+	(constraint hole_size (min 0.5mm))
+	(condition "A.Type == 'pad' && !A.isPlated()"))
+
+(rule "JLC 4L: furo mínimo castellated"
+	(constraint hole_size (min 0.6mm))
+	(condition "A.Type == 'pad' && A.Fabrication_Property == 'Castellated pad'"))
+
+(rule "JLC 4L: furo a furo, redes diferentes"
+	(constraint hole_to_hole (min 0.5mm))
+	(condition "A.Net != B.Net"))
+
+(rule "JLC 4L: via a via, mesma rede"
+	(constraint hole_to_hole (min 0.254mm))
+	(condition "A.Type == 'via' && B.Type == A.Type && A.Net == B.Net"))
+
+(rule "JLC 4L: furo de via a trilha"
+	(constraint hole_clearance (min 0.254mm))
+	(condition "A.Type == 'via' && B.Type == 'track'"))
+
+(rule "JLC 4L: furo NPTH a trilha"
+	(constraint hole_clearance (min 0.254mm))
+	(condition "A.Pad_Type == 'NPTH, mechanical' && B.Type == 'track'"))
+
+(rule "JLC 4L: furo PTH a trilha"
+	(constraint hole_clearance (min 0.33mm))
+	(condition "A.isPlated() && B.Type == 'track'"))
+
+# --- Pads ------------------------------------------------------------------
+
+(rule "JLC 4L: pad a pad com furo, redes diferentes"
+	(constraint hole_to_hole (min 0.5mm))
+	(condition "A.Type == 'pad' && B.Type == A.Type && A.Net != B.Net"))
+
+(rule "JLC 4L: pad a pad sem furo, redes diferentes"
+	(constraint clearance (min 0.127mm))
+	(condition "A.Type == 'pad' && B.Type == A.Type && A.Net != B.Net"))
+
+(rule "JLC 4L: pad a trilha"
+	(constraint clearance (min 0.2mm))
+	(condition "A.isPlated() && B.Type == 'track'"))
+
+# --- Máscara de solda ------------------------------------------------------
+
+(rule "JLC 4L: ponte mínima de máscara de solda"
+	(constraint silk_clearance (min 0.1mm))
+	(layer outer)
+	(condition "A.Type == 'pad' && B.Type == 'pad'"))
+
+# --- Silkscreen ------------------------------------------------------------
+
+(rule "JLC 4L: texto mínimo de silkscreen"
+	(constraint text_thickness (min 0.15mm))
+	(constraint text_height (min 1mm))
+	(layer "?.Silkscreen"))
+
+(rule "JLC 4L: silkscreen a pad"
+	(constraint silk_clearance (min 0.15mm))
+	(layer outer)
+	(condition "A.Type == 'pad' && (B.Type == 'text' || B.Type == 'graphic')"))
+
+# --- Contorno da placa -----------------------------------------------------
+
+(rule "JLC 4L: cobre ao contorno da placa"
+	(constraint edge_clearance (min 0.3mm))
+	(condition "A.Type == 'track' || A.Type == 'pad' || A.Type == 'via'"))

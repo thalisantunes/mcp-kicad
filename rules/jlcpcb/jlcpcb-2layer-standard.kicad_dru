@@ -1,0 +1,124 @@
+(version 1)
+
+# JLCPCB — 2 camadas, processo PADRÃO (sem sobretaxa)
+#
+# Perfil conservador: fica DENTRO do envelope que a JLCPCB fabrica sem cobrar
+# taxa de processo avançado. Não são os limites absolutos da fábrica — para
+# esses, ver jlcpcb-limites-absolutos.kicad_dru.
+#
+# Cobre: 1 oz (35 µm). Para 2 oz ou mais, trace/space mínimos sobem —
+# ver docs/research-fabricantes.md.
+#
+# Uso: PCB Editor > File > Board Setup > Design Rules > Custom Rules
+#      (colar o conteúdo, ou apontar o arquivo .kicad_dru do projeto)
+#
+# Fontes e data de verificação: rules/jlcpcb/README.md
+
+# --- Trilhas ---------------------------------------------------------------
+# 5 mil = 0.127 mm. Abaixo disso a JLCPCB cobra taxa de trilha fina em 2 camadas.
+# A capacidade física é 0.10 mm (1 oz), mas com sobretaxa.
+
+(rule "JLC 2L: largura mínima de trilha"
+	(constraint track_width (min 0.127mm))
+	(condition "A.Type == 'track'"))
+
+(rule "JLC 2L: espaçamento mínimo entre trilhas"
+	(constraint clearance (min 0.127mm))
+	(condition "A.Type == 'track' && B.Type == A.Type"))
+
+# --- Vias ------------------------------------------------------------------
+# Combinação isenta de sobretaxa: furo >= 0.2 mm E diâmetro >= 0.45 mm.
+# A JLCPCB cobra extra quando furo < 0.3 mm E diâmetro <= 0.4 mm.
+# Ou seja: 0.2/0.45 é grátis; 0.2/0.40 não é.
+
+(rule "JLC 2L: furo mínimo de via"
+	(constraint hole_size (min 0.2mm))
+	(condition "A.Type == 'via'"))
+
+(rule "JLC 2L: diâmetro mínimo de via"
+	(constraint via_diameter (min 0.45mm))
+	(condition "A.Type == 'via'"))
+
+# Anel anular por lado. 0.13 mm é DERIVADO da via isenta 0.2/0.45:
+# (0.45 - 0.2) / 2 = 0.125 mm. A figura publicada pela JLCPCB ("annular ring
+# >= 0.20 mm, 1 oz") não pode ser por lado, senão a própria via recomendada
+# por eles reprovaria. Ver README desta pasta antes de apertar este valor.
+(rule "JLC 2L: anel anular mínimo (por lado, derivado)"
+	(constraint annular_width (min 0.13mm))
+	(condition "A.isPlated()"))
+
+# --- Furos -----------------------------------------------------------------
+
+(rule "JLC 2L: furo mecânico (faixa fabricável)"
+	(constraint hole_size (min 0.2mm) (max 6.3mm)))
+
+(rule "JLC 2L: furo mínimo não metalizado (NPTH)"
+	(constraint hole_size (min 0.5mm))
+	(condition "A.Type == 'pad' && !A.isPlated()"))
+
+(rule "JLC 2L: furo mínimo castellated"
+	(constraint hole_size (min 0.6mm))
+	(condition "A.Type == 'pad' && A.Fabrication_Property == 'Castellated pad'"))
+
+(rule "JLC 2L: furo a furo, redes diferentes"
+	(constraint hole_to_hole (min 0.5mm))
+	(condition "A.Net != B.Net"))
+
+(rule "JLC 2L: via a via, mesma rede"
+	(constraint hole_to_hole (min 0.254mm))
+	(condition "A.Type == 'via' && B.Type == A.Type && A.Net == B.Net"))
+
+(rule "JLC 2L: furo de via a trilha"
+	(constraint hole_clearance (min 0.254mm))
+	(condition "A.Type == 'via' && B.Type == 'track'"))
+
+(rule "JLC 2L: furo NPTH a trilha"
+	(constraint hole_clearance (min 0.254mm))
+	(condition "A.Pad_Type == 'NPTH, mechanical' && B.Type == 'track'"))
+
+(rule "JLC 2L: furo PTH a trilha"
+	(constraint hole_clearance (min 0.33mm))
+	(condition "A.isPlated() && B.Type == 'track'"))
+
+# --- Pads ------------------------------------------------------------------
+
+(rule "JLC 2L: pad a pad com furo, redes diferentes"
+	(constraint hole_to_hole (min 0.5mm))
+	(condition "A.Type == 'pad' && B.Type == A.Type && A.Net != B.Net"))
+
+(rule "JLC 2L: pad a pad sem furo, redes diferentes"
+	(constraint clearance (min 0.127mm))
+	(condition "A.Type == 'pad' && B.Type == A.Type && A.Net != B.Net"))
+
+(rule "JLC 2L: pad a trilha"
+	(constraint clearance (min 0.2mm))
+	(condition "A.isPlated() && B.Type == 'track'"))
+
+# --- Máscara de solda ------------------------------------------------------
+# Ponte de máscara mínima: 0.10 mm (1 oz, cores padrão). Cores especiais
+# e cobre pesado exigem mais — confirmar no pedido.
+
+(rule "JLC 2L: ponte mínima de máscara de solda"
+	(constraint silk_clearance (min 0.1mm))
+	(layer outer)
+	(condition "A.Type == 'pad' && B.Type == 'pad'"))
+
+# --- Silkscreen ------------------------------------------------------------
+
+(rule "JLC 2L: texto mínimo de silkscreen"
+	(constraint text_thickness (min 0.15mm))
+	(constraint text_height (min 1mm))
+	(layer "?.Silkscreen"))
+
+(rule "JLC 2L: silkscreen a pad"
+	(constraint silk_clearance (min 0.15mm))
+	(layer outer)
+	(condition "A.Type == 'pad' && (B.Type == 'text' || B.Type == 'graphic')"))
+
+# --- Contorno da placa -----------------------------------------------------
+# Limite duro da JLCPCB para borda roteada é 0.2 mm; 0.3 mm é a margem
+# recomendada. V-cut exige 0.4 mm.
+
+(rule "JLC 2L: cobre ao contorno da placa"
+	(constraint edge_clearance (min 0.3mm))
+	(condition "A.Type == 'track' || A.Type == 'pad' || A.Type == 'via'"))
