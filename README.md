@@ -1,5 +1,11 @@
 # mcp-kicad
 
+<!-- mcp-name: io.github.thalisantunes/mcp-kicad -->
+
+> **Nota sobre o nome no PyPI:** o pacote é distribuído como `mcp-kicad10`.
+> O nome `mcp-kicad` no PyPI pertence a [daedalus/mcp-kicad](https://github.com/daedalus/mcp-kicad),
+> um projeto diferente. O módulo importável continua `mcp_kicad`.
+
 MCP server para KiCad 10, com as regras de fabricação da JLCPCB embutidas.
 
 Duas camadas de transporte, por decisão de arquitetura ([ADR 0001](docs/adr/0001-ipc-api-mais-kicad-cli.md)):

@@ -1,5 +1,5 @@
 [project]
-name = "mcp-kicad"
+name = "mcp-kicad10"
 version = "0.1.0"
 description = "MCP server para KiCad 10 — IPC API (kipy) + kicad-cli, com regras de fabricação JLCPCB embutidas"
 readme = "README.md"

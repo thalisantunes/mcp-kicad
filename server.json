@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.thalisantunes/mcp-kicad",
+  "title": "KiCad 10 MCP",
+  "description": "MCP server for KiCad 10 over the IPC API and kicad-cli, with JLCPCB fabrication rules bundled.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/thalisantunes/mcp-kicad",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcp-kicad10",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "KICAD_API_SOCKET",
+          "description": "KiCad IPC API socket path (injected by KiCad when the GUI is running)"
+        },
+        {
+          "name": "MCP_KICAD_CLI",
+          "description": "Path to the kicad-cli binary if it is not on PATH"
+        }
+      ]
+    }
+  ]
+}
