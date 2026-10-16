@@ -9,9 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from . import __version__, ipc, kicad_cli
-from .errors import McpKicadError
+from .errors import InternalError, McpKicadError
 from .fab import jlcpcb, rotations
 
 # mcp>=2.0: MCPServer substituiu FastMCP (era mcp.server.fastmcp.FastMCP).
@@ -19,11 +20,18 @@ mcp = MCPServer("mcp-kicad", version=__version__)
 
 
 def _guard(fn, *args, **kwargs) -> Any:
-    """Converte erros do projeto em mensagem legível em vez de stack trace."""
+    """Converte toda falha em ToolError: o cliente recebe `isError=true` e a causa.
+
+    Erro do projeto já traz o código MK-*. Qualquer outra exceção vira MK-INT-001
+    com tipo e mensagem, porque o SDK (mcp>=2.3) esconderia a causa e devolveria
+    só "Error executing tool X".
+    """
     try:
         return fn(*args, **kwargs)
     except McpKicadError as exc:
-        return {"error": str(exc)}
+        raise ToolError(str(exc)) from exc
+    except Exception as exc:
+        raise ToolError(str(InternalError(f"{type(exc).__name__}: {exc}"))) from exc
 
 
 # --- Ambiente --------------------------------------------------------------
@@ -43,20 +51,43 @@ def kicad_version() -> dict[str, Any]:
 
 
 @mcp.tool()
-def pcb_drc(pcb_path: str, all_severities: bool = False) -> dict[str, Any]:
-    """Roda DRC no .kicad_pcb e devolve o relatório JSON do KiCad.
+def pcb_drc(
+    pcb_path: str, all_severities: bool = False, report_path: str | None = None
+) -> dict[str, Any]:
+    """Roda DRC no .kicad_pcb e devolve um resumo do relatório.
 
     Por padrão só erros. `all_severities=True` inclui warnings e exclusões.
     Usa as custom rules do projeto (.kicad_dru) — aplique um perfil com
     jlcpcb_apply_rules antes, se quiser validar contra a fábrica.
+
+    Retorno: `violations` (total), `by_severity`, `first` (até 20 itens com type,
+    severity, description e pos; erros primeiro), `unconnected_items`,
+    `schematic_parity`, `coordinate_units` e `report_path`, o caminho do JSON
+    completo do KiCad. Sem `report_path` o JSON vai para um diretório temporário,
+    nunca ao lado do projeto; ele fica lá depois do DRC (para você abrir o
+    relatório completo) e só é removido se o DRC falhar. Um `report_path` seu
+    precisa terminar em `.json` e não pode ser o próprio `.kicad_pcb`.
     """
-    return _guard(kicad_cli.pcb_drc, pcb_path, all_severities=all_severities)
+    return _guard(
+        kicad_cli.pcb_drc, pcb_path, all_severities=all_severities, report_path=report_path
+    )
 
 
 @mcp.tool()
-def sch_erc(sch_path: str, all_severities: bool = False) -> dict[str, Any]:
-    """Roda ERC no .kicad_sch e devolve o relatório JSON do KiCad."""
-    return _guard(kicad_cli.sch_erc, sch_path, all_severities=all_severities)
+def sch_erc(
+    sch_path: str, all_severities: bool = False, report_path: str | None = None
+) -> dict[str, Any]:
+    """Roda ERC no .kicad_sch e devolve um resumo do relatório.
+
+    Mesmo formato do pcb_drc, com `sheet` em cada item de `first`: a posição
+    (`pos`) é relativa àquela folha. Sem `report_path` o JSON completo vai para um
+    diretório temporário que fica lá depois do ERC e só é removido se ele falhar.
+    Um `report_path` seu precisa terminar em `.json` e não pode ser o próprio
+    `.kicad_sch`.
+    """
+    return _guard(
+        kicad_cli.sch_erc, sch_path, all_severities=all_severities, report_path=report_path
+    )
 
 
 # --- Export (arquivo → kicad-cli) ------------------------------------------
@@ -72,6 +103,20 @@ def pcb_export_gerbers(pcb_path: str, outdir: str) -> dict[str, Any]:
 def pcb_export_drill(pcb_path: str, outdir: str) -> dict[str, Any]:
     """Exporta arquivos de furação (Excellon) do .kicad_pcb."""
     return _guard(lambda: {"outdir": str(kicad_cli.pcb_export_drill(pcb_path, outdir))})
+
+
+@mcp.tool()
+def pcb_export_step(pcb_path: str, out_path: str, subst_models: bool = True) -> dict[str, Any]:
+    """Exporta o .kicad_pcb em STEP, para modelar o gabinete em CAD mecânico.
+
+    `subst_models=True` troca os modelos 3D VRML (.wrl) pelos STEP de mesmo nome,
+    que é o que traz esses componentes para o arquivo; com False eles ficam de fora.
+    """
+    return _guard(
+        lambda: {
+            "path": str(kicad_cli.pcb_export_step(pcb_path, out_path, subst_models=subst_models))
+        }
+    )
 
 
 @mcp.tool()
@@ -103,10 +148,12 @@ def jlcpcb_apply_rules(pcb_path: str, profile: str = jlcpcb.DEFAULT_PROFILE) -> 
     """Grava o perfil JLCPCB como <projeto>.kicad_dru ao lado do .kicad_pcb.
 
     ATENÇÃO: sobrescreve custom rules existentes do projeto — o KiCad só lê de
-    um arquivo com esse nome exato. O anterior é salvo como .kicad_dru.bak.
-    Rode pcb_drc depois para ver o resultado.
+    um arquivo com esse nome exato. O original é salvo como .kicad_dru.bak na
+    primeira vez e esse .bak nunca é sobrescrito: `backup_preexistente: true` no
+    retorno avisa que o .bak já existia e o arquivo atual foi trocado sem backup
+    novo. Rode pcb_drc depois para ver o resultado.
     """
-    return _guard(lambda: {"rules_file": str(jlcpcb.apply_rules(pcb_path, profile))})
+    return _guard(jlcpcb.apply_rules, pcb_path, profile)
 
 
 @mcp.tool()
@@ -119,7 +166,10 @@ def jlcpcb_show_rules(profile: str = jlcpcb.DEFAULT_PROFILE) -> dict[str, Any]:
 def jlcpcb_export_fab_package(pcb_path: str, outdir: str | None = None) -> dict[str, Any]:
     """Gera Gerber + Excellon e empacota no zip de upload da JLCPCB.
 
-    Não inclui BOM/CPL — use jlcpcb_export_bom e jlcpcb_export_cpl.
+    Não inclui BOM/CPL — use jlcpcb_export_bom e jlcpcb_export_cpl. Gerber,
+    drill e CPL saem na mesma origem (absoluta). Pode rodar de novo no mesmo
+    diretório: o zip é sempre refeito por inteiro e só é trocado se a execução
+    terminar bem.
     """
     return _guard(jlcpcb.export_fab_package, pcb_path, outdir)
 
@@ -131,8 +181,10 @@ def jlcpcb_export_bom(sch_path: str, out_csv: str) -> dict[str, Any]:
     Colunas: `Designator,Footprint,Quantity,Value,LCSC Part #`. O código LCSC
     é consolidado a partir dos vários nomes de campo que bibliotecas
     diferentes usam (LCSC, LCSC Part #, LCSC#, JLCPCB Part #) — a primeira
-    não-vazia vence. `missing_lcsc` no retorno diz quantas linhas ficaram sem
-    código: a JLCPCB rejeita SMT assembly sem ele.
+    não-vazia vence. Só agrupa componentes com o mesmo Value, Footprint e LCSC;
+    os que não têm código compartilham uma linha própria. `missing_lcsc` no
+    retorno diz quantas linhas ficaram sem código (linhas, não componentes): a
+    JLCPCB rejeita SMT assembly sem ele.
     """
     return _guard(jlcpcb.export_bom, sch_path, out_csv)
 
@@ -141,12 +193,12 @@ def jlcpcb_export_bom(sch_path: str, out_csv: str) -> dict[str, Any]:
 def jlcpcb_export_cpl(pcb_path: str, out_csv: str) -> dict[str, Any]:
     """Gera o CPL (posições de montagem) da JLCPCB a partir do PCB.
 
-    Colunas: `Designator,Mid X,Mid Y,Rotation,Layer`. Aplica a correção de
-    rotação por encapsulamento (SOT-23, DFN, QFN...) usando a tabela baixada
-    por jlcpcb_fetch_rotations. Se a tabela não estiver em cache, o CPL sai
-    SEM correção nenhuma e o retorno vem com `warning` explícito — rode
-    jlcpcb_fetch_rotations antes de mandar para a fábrica. `corrections_applied`
-    no retorno é o antes/depois por designator, para auditoria.
+    Colunas: `Designator,Mid X,Mid Y,Rotation,Layer`, em origem absoluta (a mesma
+    dos Gerbers do pacote). Aplica a correção de rotação por encapsulamento
+    (SOT-23, DFN, QFN...) usando a tabela baixada por jlcpcb_fetch_rotations. Se a
+    tabela não estiver em cache, o CPL sai SEM correção nenhuma e o retorno vem com
+    `warning` explícito — rode jlcpcb_fetch_rotations antes de mandar para a fábrica.
+    `corrections_applied` no retorno é o antes/depois por designator, para auditoria.
     """
     return _guard(jlcpcb.export_cpl, pcb_path, out_csv)
 

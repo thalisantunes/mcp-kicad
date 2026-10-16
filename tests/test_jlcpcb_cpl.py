@@ -23,7 +23,7 @@ def _make_board(tmp_path: Path) -> Path:
 
 
 def _fake_pcb_export_pos(csv_text: str):
-    def _fn(pcb, out_csv, *, use_drill_file_origin=True, exclude_dnp=True):
+    def _fn(pcb, out_csv, *, exclude_dnp=True):
         Path(out_csv).write_text(csv_text, encoding="utf-8")
         return Path(out_csv)
 

@@ -25,14 +25,34 @@ if TYPE_CHECKING:  # pragma: no cover
     from kipy.board import Board
 
 
+# O kipy escolhe o socket sozinho: no macOS e no Linux costuma ser /tmp/kicad/api.sock, no
+# Windows e no Flatpak é outro caminho. Por isso a mensagem só dá o caminho como exemplo.
+_DEFAULT_SOCKET = (
+    "o socket padrão do kipy (por exemplo ipc:///tmp/kicad/api.sock no macOS e no Linux)"
+)
+
+
+def _socket_from_env() -> str | None:
+    """`KICAD_API_SOCKET` com o prefixo `ipc://` que o nng exige.
+
+    O KiCad injeta a variável já com o prefixo; quem a define à mão costuma
+    esquecê-lo, e aí a conexão falha com "Invalid argument".
+    """
+    raw = os.environ.get("KICAD_API_SOCKET")
+    if raw and "://" not in raw:
+        return f"ipc://{raw}"
+    return raw or None
+
+
 def connect(timeout_ms: int = 2000) -> KiCad:
     """Conecta na sessão aberta do KiCad.
 
     Lê `KICAD_API_SOCKET` e `KICAD_API_TOKEN` do ambiente — o KiCad injeta essas
     variáveis nos plugins que ele lança. Rodando fora desse contexto (por
-    exemplo, como MCP server iniciado pelo Claude Code), o socket default é
-    `api.sock` no tmpdir do usuário, com o PID sufixado quando há mais de uma
-    instância aberta. Se a conexão falhar, é isso que costuma estar errado.
+    exemplo, como MCP server iniciado pelo Claude Code), vale o socket padrão do
+    kipy: `/tmp/kicad/api.sock` no macOS e no Linux (Windows e Flatpak usam outro
+    caminho), e uma segunda instância do KiCad usa `api-<pid>.sock`. A API vem
+    desligada: liga em Preferences → Plugins → "Enable KiCad API".
     """
     try:
         from kipy import KiCad as _KiCad
@@ -41,15 +61,20 @@ def connect(timeout_ms: int = 2000) -> KiCad:
             "kicad-python não instalado. `uv pip install kicad-python`"
         ) from exc
 
+    socket_path = _socket_from_env()
     try:
-        return _KiCad(timeout_ms=timeout_ms)
+        kicad = _KiCad(socket_path=socket_path, timeout_ms=timeout_ms)
+        # O kipy conecta de forma preguiçosa: sem um pedido real, o KiCad fechado ou
+        # com a API desligada só apareceria depois, disfarçado de "nenhum board aberto".
+        kicad.get_version()
     except Exception as exc:
-        socket_hint = os.environ.get("KICAD_API_SOCKET", "(KICAD_API_SOCKET não definida)")
         raise IpcUnavailable(
-            "não foi possível conectar na IPC API do KiCad. Verifique se o PCB "
-            "Editor está aberto e se a API está habilitada em Preferences → "
-            f"Plugins. Socket: {socket_hint}"
+            f"não foi possível conectar na IPC API do KiCad ({type(exc).__name__}: {exc}). "
+            "O PCB Editor está aberto? A API está habilitada em Preferences → Plugins → "
+            '"Enable KiCad API"? '
+            f"Socket: {socket_path or _DEFAULT_SOCKET}"
         ) from exc
+    return kicad
 
 
 def open_board(timeout_ms: int = 2000) -> Board:

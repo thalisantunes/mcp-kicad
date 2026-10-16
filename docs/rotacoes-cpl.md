@@ -19,9 +19,11 @@ Esse arquivo é **GPL-3.0**. O `mcp-kicad` é MIT, então o CSV **não é
 embarcado no repo** — embarcar violaria a licença do projeto. Em vez disso:
 
 - `rotations.fetch_table()` (tool `jlcpcb_fetch_rotations`) baixa o CSV
-  direto do GitHub com `urllib.request` (stdlib, sem dependência nova) e
-  grava em `$XDG_CACHE_HOME/mcp-kicad/cpl_rotations_db.csv`, com fallback
-  `~/.cache/mcp-kicad/` quando `XDG_CACHE_HOME` não está definida.
+  direto do GitHub, **fixo nesse commit** (hash completo em
+  `rotations.TABLE_COMMIT`, não em `master`: um commit futuro do projeto de
+  origem mudaria o CPL sem aviso), com `urllib.request` (stdlib, sem
+  dependência nova) e grava em `$XDG_CACHE_HOME/mcp-kicad/cpl_rotations_db.csv`,
+  com fallback `~/.cache/mcp-kicad/` quando `XDG_CACHE_HOME` não está definida.
 - `rotations.load_table()` só lê esse cache. Se não existir, o erro
   `MK-FAB-002` (`RotationTableUnavailable`) pede para rodar o fetch antes.
 - O CSV baixado **nunca é commitado**. Se aparecer dentro do repo, é bug —
@@ -66,16 +68,31 @@ matching errado com substring simples e aplicar correção onde não deveria.
 
 Verificadas manualmente antes de escrever este código — não redescobrir:
 
-1. **O `kicad-cli` já inverte o eixo Y e já subtrai a aux origin** quando
-   `--use-drill-file-origin` está ativo. Exemplo real: aux origin
-   `(78.15, 81.35)`, footprint C503 em `at=(84.61, 74.47)` no
-   `.kicad_pcb`, saída do CLI `PosX=6.46, PosY=6.88` — exatamente
-   `(84.61−78.15, 81.35−74.47)`. **Não reaplique nenhuma transformação de Y
-   por cima disso.** Fazer isso monta a placa espelhada.
+1. **O `kicad-cli` já inverte o eixo Y.** Exemplo real: footprint C503 em
+   `at=(84.61, 74.47)` no `.kicad_pcb`, saída do CLI `PosX=84.61,
+   PosY=-74.47` — o `y` do board com o sinal trocado, que é o sinal dos
+   Gerbers. **Não reaplique nenhuma transformação de Y por cima disso.**
+   Fazer isso monta a placa espelhada.
 2. **O `kicad-cli` NÃO espelha o ângulo do bottom.** Ele exporta o ângulo
    cru do footprint, como gravado no `.kicad_pcb`, mesmo para componentes em
    `B.Cu`. A transformação de bottom (passo 1 da matemática acima) é
    responsabilidade deste módulo, não do `kicad-cli`.
+
+## Origem das coordenadas do pacote de fabricação
+
+Gerber, drill e CPL saem na **mesma origem, a absoluta**: Gerber e drill são o
+padrão do `kicad-cli`, e o CPL é gerado **sem** `--use-drill-file-origin`. A aux
+origin do board é ignorada de propósito.
+
+O motivo é o quadro de coordenadas ser um só dentro do pacote. Antes, o CPL
+saía na aux origin e os Gerbers na absoluta; num board com aux origin diferente
+de zero, como o `CM5_MINIMA_3` (`(78.15, 81.35)`), o `Mid X`/`Mid Y` do C503
+valia `(6.46, 6.88)` enquanto o contorno do Gerber ia de X 76 a 135: o CPL caía
+fora da placa do próprio pacote. Em board sem aux origin os dois quadros
+coincidem, e por isso o erro não aparecia em testes simples.
+
+Consequência: o `Mid Y` sai com o sinal do Gerber, negativo para componentes
+abaixo da origem da página (C503: `Mid X=84.61, Mid Y=-74.47`).
 
 ## Valores conferidos contra o board real (`CM5_MINIMA_3`)
 

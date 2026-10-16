@@ -10,8 +10,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import tempfile
+from collections import Counter
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,37 +26,75 @@ from .errors import InvalidPath, KicadCliFailed, KicadCliNotFound
 # Timeout generoso: export de Gerber em placa grande passa de 30s com folga.
 DEFAULT_TIMEOUT_S = 300
 
-# Ordem de busca: env explícito, PATH, caminhos do PPA/apt, Flatpak.
+# Ordem de busca: MCP_KICAD_CLI, PATH, instalações conhecidas, Flatpak. O DMG do
+# macOS não põe o kicad-cli no PATH (o cask do Homebrew cria um symlink).
+_KNOWN_CLI = [
+    "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+    "~/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+    r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe",
+]
 _FLATPAK_CMD = ["flatpak", "run", "--command=kicad-cli", "org.kicad.KiCad"]
+_FLATPAK_PROBE_TIMEOUT_S = 10
+
+
+def _split_command(value: str, *, posix: bool) -> list[str]:
+    """Quebra um comando em argumentos respeitando aspas.
+
+    Fora do modo POSIX (Windows) as barras invertidas ficam intactas; o shlex
+    nesse modo mantém as aspas no token, então elas são removidas aqui.
+    """
+    return [token.strip('"') for token in shlex.split(value, posix=posix)]
 
 
 def resolve_cli() -> list[str]:
     """Devolve o comando base do kicad-cli, como lista para subprocess.
 
     `MCP_KICAD_CLI` sobrescreve tudo — use quando houver mais de uma instalação
-    e você quiser fixar qual delas o MCP usa.
+    e você quiser fixar qual delas o MCP usa. Aceita um caminho (mesmo com espaço,
+    sem aspas) ou um comando com argumentos (ex.: o do Flatpak).
     """
     override = os.environ.get("MCP_KICAD_CLI")
     if override:
-        return override.split()
+        single = Path(override).expanduser()
+        if single.is_file():
+            return [str(single)]
+        try:
+            return _split_command(override, posix=os.name != "nt")
+        except ValueError as exc:  # aspas desbalanceadas
+            raise KicadCliNotFound(
+                f"MCP_KICAD_CLI inválida ({exc}): confira as aspas em {override!r}."
+            ) from exc
 
     found = shutil.which("kicad-cli")
     if found:
         return [found]
 
+    for candidate in _KNOWN_CLI:
+        path = Path(candidate).expanduser()
+        if path.is_file():
+            return [str(path)]
+
     if shutil.which("flatpak"):
-        probe = subprocess.run(  # noqa: S603
-            ["flatpak", "info", "org.kicad.KiCad"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if probe.returncode == 0:
+        try:
+            probe = subprocess.run(  # noqa: S603
+                ["flatpak", "info", "org.kicad.KiCad"],
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_FLATPAK_PROBE_TIMEOUT_S,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            probe = None  # flatpak travado ou inexecutável: tratar como não instalado
+        if probe is not None and probe.returncode == 0:
             return list(_FLATPAK_CMD)
 
+    searched = ["MCP_KICAD_CLI (não definida)", "PATH", *_KNOWN_CLI, "Flatpak (org.kicad.KiCad)"]
     raise KicadCliNotFound(
-        "kicad-cli não encontrado. Instale o KiCad (ver README) ou aponte "
-        "MCP_KICAD_CLI para o binário."
+        f"kicad-cli não encontrado. Procurei em: {', '.join(searched)}. Instale o KiCad "
+        "(ver README) ou aponte MCP_KICAD_CLI para o binário, por exemplo: "
+        "MCP_KICAD_CLI=/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
     )
 
 
@@ -66,18 +109,35 @@ class CliResult:
         return self.returncode == 0
 
 
+_STDERR_TAIL_LINES = 15
+
+
+def _failure(message: str, result: CliResult) -> KicadCliFailed:
+    """KicadCliFailed com o fim do stderr na mensagem: é o motivo que o agente precisa ver."""
+    tail = "\n".join(result.stderr.strip().splitlines()[-_STDERR_TAIL_LINES:])
+    return KicadCliFailed(
+        f"{message}\n{tail}" if tail else message,
+        returncode=result.returncode,
+        stderr=result.stderr.strip(),
+    )
+
+
 def run(args: list[str], *, timeout_s: int = DEFAULT_TIMEOUT_S, check: bool = True) -> CliResult:
     """Roda `kicad-cli <args>`.
 
     `check=False` é necessário para DRC/ERC: com --exit-code-violations o
     returncode 5 significa "achou violação", que é resultado válido, não falha.
+
+    O stdin do servidor é o canal JSON-RPC do MCP, então o filho nunca o herda.
     """
     cmd = [*resolve_cli(), *args]
     try:
         proc = subprocess.run(  # noqa: S603
             cmd,
             capture_output=True,
-            text=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_s,
             check=False,
         )
@@ -86,14 +146,15 @@ def run(args: list[str], *, timeout_s: int = DEFAULT_TIMEOUT_S, check: bool = Tr
             f"kicad-cli excedeu {timeout_s}s em: {' '.join(args)}",
             returncode=-1,
         ) from exc
+    except OSError as exc:
+        raise KicadCliNotFound(
+            f"não foi possível executar {cmd[0]!r}: {exc}. Confira MCP_KICAD_CLI ou "
+            "instale o KiCad (ver README)."
+        ) from exc
 
     result = CliResult(proc.returncode, proc.stdout, proc.stderr)
     if check and not result.ok:
-        raise KicadCliFailed(
-            f"kicad-cli falhou ({proc.returncode}) em: {' '.join(args)}",
-            returncode=proc.returncode,
-            stderr=result.stderr.strip(),
-        )
+        raise _failure(f"kicad-cli falhou ({proc.returncode}) em: {' '.join(args)}", result)
     return result
 
 
@@ -113,60 +174,98 @@ def _require(path: str | Path, suffix: str) -> Path:
 # --- Verificação -----------------------------------------------------------
 
 
-def pcb_drc(pcb: str | Path, *, all_severities: bool = False) -> dict[str, Any]:
-    """DRC no PCB, saída JSON parseada.
+def pcb_drc(
+    pcb: str | Path,
+    *,
+    all_severities: bool = False,
+    report_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """DRC no PCB. Devolve um resumo; o relatório JSON completo fica em `report_path`.
 
-    Retorna o relatório do KiCad como dict. Chave prática: `violations`.
+    Sem `report_path` o relatório vai para um diretório temporário, nunca ao lado
+    do projeto (que pode ser somente leitura). Esse diretório NÃO é apagado quando
+    o DRC termina: o resumo devolve o caminho para abrir o relatório completo, e o
+    sistema limpa o temporário depois. Só uma falha o remove. Um `report_path`
+    precisa terminar em `.json` e não pode ser o próprio `.kicad_pcb`. Ver
+    `_summarize` para as chaves do resumo.
     """
     board = _require(pcb, ".kicad_pcb")
-    out = board.with_suffix(".drc.json")
-    args = [
-        "pcb",
-        "drc",
-        "--format",
-        "json",
-        "--output",
-        str(out),
-        "--exit-code-violations",
-    ]
-    args.append("--severity-all" if all_severities else "--severity-error")
-    args.append(str(board))
+    with _report_file(report_path, f"{board.stem}.drc.json", board) as out:
+        args = [
+            "pcb",
+            "drc",
+            "--format",
+            "json",
+            "--output",
+            str(out),
+            "--exit-code-violations",
+        ]
+        args.append("--severity-all" if all_severities else "--severity-error")
+        args.append(str(board))
 
-    result = run(args, check=False)
-    # 0 = limpo, 5 = violações encontradas. Qualquer outro é falha real.
-    if result.returncode not in (0, 5):
-        raise KicadCliFailed(
-            f"DRC falhou em {board.name}",
-            returncode=result.returncode,
-            stderr=result.stderr.strip(),
-        )
-    return _read_report(out, kind="DRC")
+        result = run(args, check=False)
+        # 0 = limpo, 5 = violações encontradas. Qualquer outro é falha real.
+        if result.returncode not in (0, 5):
+            raise _failure(f"DRC falhou ({result.returncode}) em {board.name}", result)
+        return _summarize(_read_report(out, kind="DRC"), out)
 
 
-def sch_erc(sch: str | Path, *, all_severities: bool = False) -> dict[str, Any]:
-    """ERC no esquemático, saída JSON parseada."""
+def sch_erc(
+    sch: str | Path,
+    *,
+    all_severities: bool = False,
+    report_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """ERC no esquemático. Mesmo formato e mesmas regras de `report_path` do pcb_drc.
+
+    Cada item de `first` traz a folha (`sheet`) em que a violação está.
+    """
     schematic = _require(sch, ".kicad_sch")
-    out = schematic.with_suffix(".erc.json")
-    args = [
-        "sch",
-        "erc",
-        "--format",
-        "json",
-        "--output",
-        str(out),
-        "--exit-code-violations",
-    ]
-    args.append("--severity-all" if all_severities else "--severity-error")
-    args.append(str(schematic))
+    with _report_file(report_path, f"{schematic.stem}.erc.json", schematic) as out:
+        args = [
+            "sch",
+            "erc",
+            "--format",
+            "json",
+            "--output",
+            str(out),
+            "--exit-code-violations",
+        ]
+        args.append("--severity-all" if all_severities else "--severity-error")
+        args.append(str(schematic))
 
-    result = run(args, check=False)
-    if result.returncode not in (0, 5):
-        raise KicadCliFailed(
-            f"ERC falhou em {schematic.name}",
-            returncode=result.returncode,
-            stderr=result.stderr.strip(),
-        )
-    return _read_report(out, kind="ERC")
+        result = run(args, check=False)
+        if result.returncode not in (0, 5):
+            raise _failure(f"ERC falhou ({result.returncode}) em {schematic.name}", result)
+        return _summarize(_read_report(out, kind="ERC"), out)
+
+
+@contextmanager
+def _report_file(report_path: str | Path | None, name: str, source: Path) -> Iterator[Path]:
+    """Caminho do relatório JSON de DRC/ERC.
+
+    Com `report_path`, é o caminho do chamador: precisa terminar em `.json` e não
+    pode ser o próprio arquivo de entrada (o kicad-cli o sobrescreveria com o
+    relatório). Sem ele, é um arquivo num diretório temporário novo, que FICA em
+    caso de sucesso (o resumo devolve o caminho) e só é apagado se o bloco falhar.
+    """
+    if report_path:
+        given = Path(report_path).expanduser()
+        if given.suffix != ".json":
+            raise InvalidPath(f"report_path deve terminar em .json: {given}")
+        target = given.resolve()
+        if target == source:  # ex.: um symlink .json apontando para a placa
+            raise InvalidPath(f"report_path não pode ser o arquivo de entrada: {source}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        yield target
+        return
+
+    scratch = Path(tempfile.mkdtemp(prefix="mcp-kicad-"))
+    try:
+        yield scratch / name
+    except BaseException:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
 
 
 def _read_report(path: Path, *, kind: str) -> dict[str, Any]:
@@ -175,6 +274,48 @@ def _read_report(path: Path, *, kind: str) -> dict[str, Any]:
             f"{kind} não gerou relatório em {path}", returncode=0
         )
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+_FIRST_VIOLATIONS = 20
+_SEVERITY_RANK = {"error": 0, "warning": 1}  # o resto (exclusões...) vem depois
+
+
+def _summarize(report: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Resume o relatório de DRC (`violations`) ou de ERC (`sheets[].violations`).
+
+    O relatório de uma placa real passa fácil de 100 KiB (296 KiB com 507
+    violações), grande demais para uma resposta de tool. Chaves: `violations`
+    (total), `by_severity`, `first` (até 20 itens, erros antes de warnings; `pos`
+    é a do primeiro item envolvido), `unconnected_items` e `schematic_parity` (só
+    no DRC), `coordinate_units` e `report_path` (o relatório completo).
+    """
+    found = [(None, v) for v in report.get("violations", [])]
+    found += [(s.get("path"), v) for s in report.get("sheets", []) for v in s.get("violations", [])]
+    found.sort(key=lambda item: _SEVERITY_RANK.get(item[1].get("severity"), 2))
+
+    first = []
+    for sheet, violation in found[:_FIRST_VIOLATIONS]:
+        entry = {
+            "type": violation.get("type"),
+            "severity": violation.get("severity"),
+            "description": violation.get("description"),
+            "pos": next((i["pos"] for i in violation.get("items", []) if "pos" in i), None),
+        }
+        if sheet is not None:
+            entry["sheet"] = sheet
+        first.append(entry)
+
+    summary: dict[str, Any] = {
+        "violations": len(found),
+        "by_severity": dict(Counter(v.get("severity") for _, v in found)),
+        "first": first,
+        "coordinate_units": report.get("coordinate_units"),
+        "report_path": str(path),
+    }
+    for key in ("unconnected_items", "schematic_parity"):
+        if key in report:
+            summary[key] = len(report[key])
+    return summary
 
 
 # --- Export ----------------------------------------------------------------
@@ -292,26 +433,48 @@ def pcb_export_pos(
     pcb: str | Path,
     out_csv: str | Path,
     *,
-    use_drill_file_origin: bool = True,
     exclude_dnp: bool = True,
 ) -> Path:
     """Exporta posições de componentes (placement) em CSV (uso: fab/jlcpcb.py).
 
-    Saída: `Ref,Val,Package,PosX,PosY,Rot,Side`. Com `--use-drill-file-origin`
-    o kicad-cli já subtrai a aux origin e já inverte o eixo Y — não reaplique
-    nenhuma transformação de Y por cima disso. Ele NÃO espelha o ângulo do
-    bottom: `Rot` sai cru do footprint, como gravado no `.kicad_pcb`. A
-    correção de rotação por encapsulamento é responsabilidade de
-    fab/rotations.py. Ver docs/rotacoes-cpl.md.
+    Saída: `Ref,Val,Package,PosX,PosY,Rot,Side`, em origem ABSOLUTA, a mesma que
+    pcb_export_gerbers e pcb_export_drill usam por padrão. Não passe
+    `--use-drill-file-origin`: ele moveria só o CPL para a aux origin e o
+    desalinharia dos Gerbers do mesmo pacote. O kicad-cli já inverte o eixo Y
+    (PosY sai com o sinal do Gerber) — não reaplique nenhuma transformação de Y
+    por cima disso. Ele NÃO espelha o ângulo do bottom: `Rot` sai cru do
+    footprint, como gravado no `.kicad_pcb`. A correção de rotação por
+    encapsulamento é responsabilidade de fab/rotations.py. Ver docs/rotacoes-cpl.md.
     """
     board = _require(pcb, ".kicad_pcb")
     dest = Path(out_csv).expanduser().resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
     args = ["pcb", "export", "pos", "--format", "csv", "--units", "mm", "--output", str(dest)]
-    if use_drill_file_origin:
-        args.append("--use-drill-file-origin")
     if exclude_dnp:
         args.append("--exclude-dnp")
     args.append(str(board))
     run(args)
+    return dest
+
+
+def pcb_export_step(
+    pcb: str | Path,
+    out_path: str | Path,
+    *,
+    subst_models: bool = True,
+) -> Path:
+    """Exporta o board em STEP (ponte para CAD mecânico, ex.: gabinete no FreeCAD).
+
+    `subst_models` troca os modelos 3D VRML (.wrl) pelos STEP de mesmo nome, que
+    é o que põe esses componentes no arquivo; sem isso eles ficam de fora e o STEP
+    sai só com a placa e os componentes cujo modelo já é STEP. Uma saída que já
+    existe é sobrescrita (`--force`), como nos outros exports.
+    """
+    board = _require(pcb, ".kicad_pcb")
+    dest = Path(out_path).expanduser().resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    args = ["pcb", "export", "step", "--force"]
+    if subst_models:
+        args.append("--subst-models")
+    run([*args, "--output", str(dest), str(board)])
     return dest

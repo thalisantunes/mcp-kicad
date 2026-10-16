@@ -7,7 +7,9 @@ de fabricação. Números e tabela de sobretaxa: rules/jlcpcb/README.md.
 from __future__ import annotations
 
 import csv
+import os
 import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,24 +86,31 @@ def rules_text(profile: str = DEFAULT_PROFILE) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def apply_rules(pcb: str | Path, profile: str = DEFAULT_PROFILE) -> Path:
+def apply_rules(pcb: str | Path, profile: str = DEFAULT_PROFILE) -> dict[str, Any]:
     """Escreve o perfil como `<projeto>.kicad_dru` ao lado do `.kicad_pcb`.
 
     O KiCad lê custom rules de um único arquivo por projeto, com esse nome
     exato — não há como linkar. Portanto isto **sobrescreve** regras customizadas
-    que já existam no projeto. Um `.kicad_dru.bak` é deixado quando havia
-    arquivo anterior.
+    que já existam no projeto. O original vai para `.kicad_dru.bak` na primeira
+    vez; se o `.bak` já existe ele é preservado (senão a 2ª chamada perderia as
+    regras do usuário) e o retorno traz `backup_preexistente: True`.
     """
     board = Path(pcb).expanduser().resolve()
     if not board.is_file() or board.suffix != ".kicad_pcb":
         raise InvalidPath(f".kicad_pcb não encontrado: {board}")
 
+    text = rules_text(profile)  # valida o perfil antes de mexer em qualquer arquivo
     target = board.with_suffix(".kicad_dru")
+    result: dict[str, Any] = {"rules_file": str(target)}
     if target.is_file():
-        shutil.copy2(target, target.with_suffix(".kicad_dru.bak"))
+        backup = target.with_suffix(".kicad_dru.bak")
+        result["backup"] = str(backup)
+        result["backup_preexistente"] = backup.exists()
+        if not backup.exists():
+            shutil.copy2(target, backup)
 
-    target.write_text(rules_text(profile), encoding="utf-8")
-    return target
+    target.write_text(text, encoding="utf-8")
+    return result
 
 
 # Camadas não-cobre que a fábrica precisa. Paste fica fora: serve para stencil
@@ -134,6 +143,11 @@ def export_fab_package(
 
     Não gera BOM/CPL: isso exige o esquemático e a resolução de códigos LCSC,
     que é responsabilidade separada (ver README, seção Roadmap).
+
+    Gerber e drill saem em origem absoluta, a mesma do CPL (jlcpcb_export_cpl).
+    Pode ser executado de novo no mesmo diretório: o export vai para um
+    subdiretório novo e vazio, o zip leva só o que esta execução gerou e
+    substitui o anterior de uma vez (uma falha no meio mantém o zip bom).
     """
     board = Path(pcb).expanduser().resolve()
     if not board.is_file() or board.suffix != ".kicad_pcb":
@@ -144,20 +158,31 @@ def export_fab_package(
 
     layers = fab_layers(board)
 
-    # Empacota pelo que ESTA execução criou, não por extensão. Filtrar por
-    # sufixo silenciosamente descarta cobre/máscara/silk quando a extensão
-    # Protel está ativa — e o zip resultante parece válido.
-    before = {p.name for p in dest.iterdir() if p.is_file()}
-    kicad_cli.pcb_export_gerbers(board, dest, layers=layers, protel_ext=False)
-    kicad_cli.pcb_export_drill(board, dest)
-    produced = sorted(
-        p
-        for p in dest.iterdir()
-        if p.is_file() and p.name not in before and p.name != zip_name
-    )
+    archive = dest / zip_name
+    # Empacota pelo que ESTA execução criou, não por extensão (filtrar por sufixo
+    # descarta cobre/máscara/silk quando a extensão Protel está ativa) e nem por
+    # "nomes novos" (na 2ª execução os nomes se repetem e o zip sairia vazio).
+    # Um subdiretório novo garante que só há arquivos desta execução.
+    with tempfile.TemporaryDirectory(prefix=".fab-", dir=dest) as tmp:
+        work = Path(tmp)
+        kicad_cli.pcb_export_gerbers(board, work, layers=layers, protel_ext=False)
+        kicad_cli.pcb_export_drill(board, work)
+        produced = sorted(p for p in work.iterdir() if p.is_file())
+        if not produced:
+            raise InvalidPath(f"nenhum Gerber/drill gerado em {dest}")
 
-    if not produced:
-        raise InvalidPath(f"nenhum Gerber/drill gerado em {dest}")
+        partial = archive.with_name(archive.name + ".tmp")
+        try:
+            # A JLCPCB quer os arquivos na raiz do zip, sem diretório intermediário.
+            with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as zf:
+                for member in produced:
+                    zf.write(member, arcname=member.name)
+            os.replace(partial, archive)
+        finally:
+            partial.unlink(missing_ok=True)
+
+        for member in produced:  # os arquivos soltos continuam em `dest`, como antes
+            os.replace(member, dest / member.name)
 
     missing = [
         layer
@@ -166,12 +191,6 @@ def export_fab_package(
         # checagem é por camada canônica achatada (F.Cu -> F_Cu).
         if not any(layer.replace(".", "_") in p.name for p in produced)
     ]
-
-    archive = dest / zip_name
-    # A JLCPCB quer os arquivos na raiz do zip, sem diretório intermediário.
-    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-        for member in produced:
-            zf.write(member, arcname=member.name)
 
     result = {
         "zip": str(archive),
@@ -248,8 +267,11 @@ def export_bom(sch: str | Path, out_csv: str | Path) -> dict[str, Any]:
     Colunas de saída: `Designator,Footprint,Quantity,Value,LCSC Part #`. O
     código LCSC é consolidado a partir de LCSC_FIELDS — bibliotecas diferentes
     usam nomes de campo diferentes para o mesmo dado, e a JLCPCB só entende
-    uma coluna. Linhas sem nenhum desses campos preenchido saem com "LCSC
-    Part #" vazio; a contagem vai em `missing_lcsc` no retorno.
+    uma coluna. Componentes só são agrupados quando Value, Footprint e LCSC
+    são iguais: códigos diferentes nunca se juntam. Itens com o mesmo Value e
+    Footprint SEM nenhum desses campos preenchido compartilham uma linha (separada
+    dos que têm código), com "LCSC Part #" vazio. `missing_lcsc` no retorno conta
+    essas LINHAS, não componentes.
     """
     schematic = Path(sch).expanduser().resolve()
     if not schematic.is_file() or schematic.suffix != ".kicad_sch":
@@ -260,11 +282,15 @@ def export_bom(sch: str | Path, out_csv: str | Path) -> dict[str, Any]:
     raw = _raw_sibling(dest)
 
     fields = ["Reference", "Footprint", "QUANTITY", "Value", *LCSC_FIELDS]
+    # Agrupar também pelo LCSC: só por Value+Footprint o kicad-cli junta códigos
+    # diferentes na mesma célula ("C15850,C99999") e esconde o item sem código
+    # dentro do grupo. Assim os itens sem LCSC ficam numa linha separada da dos que
+    # têm código, e essa linha entra em missing_lcsc.
     kicad_cli.sch_export_bom_fields(
         schematic,
         raw,
         fields=",".join(fields),
-        group_by="Value,Footprint",
+        group_by=",".join(["Value", "Footprint", *LCSC_FIELDS]),
         exclude_dnp=True,
         ref_range_delimiter="",
     )
@@ -315,8 +341,9 @@ def export_bom(sch: str | Path, out_csv: str | Path) -> dict[str, Any]:
 def export_cpl(pcb: str | Path, out_csv: str | Path) -> dict[str, Any]:
     """Gera CPL (posições de montagem) com a correção de rotação da JLCPCB aplicada.
 
-    Colunas de saída: `Designator,Mid X,Mid Y,Rotation,Layer`. A correção de
-    rotação depende da tabela baixada por rotations.fetch_table() (tool
+    Colunas de saída: `Designator,Mid X,Mid Y,Rotation,Layer`, em origem
+    ABSOLUTA, a mesma dos Gerbers e do drill do pacote (jlcpcb_export_fab_package).
+    A correção de rotação depende da tabela baixada por rotations.fetch_table() (tool
     jlcpcb_fetch_rotations). Se ela não estiver em cache, o CPL ainda é
     gerado — sem NENHUMA correção — mas o retorno vem com `warning` explícito:
     silêncio aqui vira placa montada com componentes girados errado.
@@ -345,7 +372,7 @@ def export_cpl(pcb: str | Path, out_csv: str | Path) -> dict[str, Any]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     raw = _raw_sibling(dest)
 
-    kicad_cli.pcb_export_pos(board, raw, use_drill_file_origin=True, exclude_dnp=True)
+    kicad_cli.pcb_export_pos(board, raw, exclude_dnp=True)
 
     table: list[rotations.Correction] = []
     warnings: list[str] = []

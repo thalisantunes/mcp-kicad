@@ -11,9 +11,12 @@ num teste deste repo MIT seria reproduzir o dado, não só a ideia.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from mcp_kicad.errors import RotationTableInvalid
+from mcp_kicad.fab import rotations
 from mcp_kicad.fab.rotations import Correction, corrected_rotation, find_correction, load_table
 
 
@@ -163,3 +166,11 @@ def test_load_table_all_rows_malformed_raises_invalid(tmp_path, monkeypatch) -> 
 
     with pytest.raises(RotationTableInvalid):
         load_table()
+
+
+def test_table_url_is_pinned_to_the_documented_commit_not_master() -> None:
+    """Baixar de `master` faria qualquer commit futuro do projeto de origem mudar o CPL."""
+    assert re.fullmatch(r"[0-9a-f]{40}", rotations.TABLE_COMMIT)
+    assert rotations.TABLE_COMMIT.startswith("500a9ff")  # o commit citado em docs/rotacoes-cpl.md
+    assert rotations.TABLE_COMMIT in rotations.TABLE_URL
+    assert "master" not in rotations.TABLE_URL
