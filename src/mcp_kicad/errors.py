@@ -68,3 +68,13 @@ class UnexpectedCliOutput(McpKicadError):
 
 class InvalidPath(McpKicadError):
     code = "MK-GEN-002"
+
+
+class InternalError(McpKicadError):
+    """Exceção inesperada (falha de E/S, bug) convertida em erro de tool pelo `_guard`.
+
+    A mensagem carrega o tipo e o texto da exceção original, que sem isso o SDK
+    esconderia do agente (mcp>=2.3 devolve só "Error executing tool X").
+    """
+
+    code = "MK-INT-001"

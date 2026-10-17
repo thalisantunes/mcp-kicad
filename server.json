@@ -3,7 +3,7 @@
   "name": "io.github.thalisantunes/mcp-kicad",
   "title": "KiCad 10 MCP",
   "description": "MCP server for KiCad 10 over the IPC API and kicad-cli, with JLCPCB fabrication rules bundled.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/thalisantunes/mcp-kicad",
     "source": "github"
@@ -13,7 +13,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "mcp-kicad10",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

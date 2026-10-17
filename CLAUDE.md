@@ -39,8 +39,10 @@ derivados, com a conta no comentário.
 ## Erros
 
 Toda exceção exposta ao cliente MCP herda de `McpKicadError` e tem código
-`MK-<área>-<n>`. As tools passam por `_guard()`, que devolve `{"error": ...}` em
-vez de stack trace. Erro novo = classe nova em `errors.py`, com código.
+`MK-<área>-<n>`. As tools passam por `_guard()`, que LEVANTA `ToolError` do SDK
+(o cliente recebe `isError=true` e a mensagem `[MK-...]`, sem stack trace); uma
+exceção que não é do projeto vira `[MK-INT-001] <tipo>: <mensagem>`. Erro novo =
+classe nova em `errors.py`, com código.
 
 ## Convenções
 
@@ -54,6 +56,11 @@ vez de stack trace. Erro novo = classe nova em `errors.py`, com código.
 
 ```bash
 uv run ruff check . && uv run python -c "import mcp_kicad.server"
+```
+
+```bash
+uv run pytest -q                       # tudo; os testes `integration` usam o kicad-cli real
+uv run pytest -q -m "not integration"  # o que o CI roda (o runner não tem KiCad)
 ```
 
 ```bash

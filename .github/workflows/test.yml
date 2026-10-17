@@ -1,0 +1,21 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      # --locked: falha se o uv.lock estiver fora de sincronia com o pyproject.
+      - run: uv sync --locked --extra dev
+      - run: uv run ruff check .
+      # Os testes `integration` exigem o kicad-cli real, que o runner não tem.
+      - run: uv run pytest -q -m "not integration"

@@ -1,6 +1,6 @@
 [project]
 name = "mcp-kicad10"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server para KiCad 10 — IPC API (kipy) + kicad-cli, com regras de fabricação JLCPCB embutidas"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,12 +13,15 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=2.0.0",
-    "kicad-python>=0.7.1",
+    "mcp>=2.0.0,<3",
+    "kicad-python>=0.7.1,<1",
 ]
 
+# Os dois nomes: `mcp-kicad` para `uv run`, `mcp-kicad10` (o nome da distribuição)
+# para `uvx mcp-kicad10`, que só acha executável com o nome do pacote.
 [project.scripts]
 mcp-kicad = "mcp_kicad.__main__:main"
+mcp-kicad10 = "mcp_kicad.__main__:main"
 
 [project.optional-dependencies]
 dev = [
@@ -49,3 +52,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: usa o kicad-cli real e os projetos de demo do KiCad (pula sozinho se ausentes)",
+]

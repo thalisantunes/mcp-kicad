@@ -29,9 +29,12 @@ from pathlib import Path
 
 from ..errors import RotationTableInvalid, RotationTableUnavailable
 
+# Commit fixo (o `500a9ff` de docs/rotacoes-cpl.md, completo). Baixar de `master`
+# faria qualquer commit futuro do projeto de origem mudar o CPL sem aviso.
+TABLE_COMMIT = "500a9fff5998edb23f9bc36920a6f8f598f4ff67"
 TABLE_URL = (
     "https://raw.githubusercontent.com/matthewlai/JLCKicadTools/"
-    "master/jlc_kicad_tools/cpl_rotations_db.csv"
+    f"{TABLE_COMMIT}/jlc_kicad_tools/cpl_rotations_db.csv"
 )
 _FETCH_TIMEOUT_S = 10
 _CACHE_FILENAME = "cpl_rotations_db.csv"
