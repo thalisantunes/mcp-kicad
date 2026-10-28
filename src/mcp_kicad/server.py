@@ -14,6 +14,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from . import __version__, ipc, kicad_cli
 from .errors import InternalError, McpKicadError
 from .fab import jlcpcb, rotations
+from .validate import run_validate
 
 # mcp>=2.0: MCPServer substituiu FastMCP (era mcp.server.fastmcp.FastMCP).
 mcp = MCPServer("mcp-kicad", version=__version__)
@@ -213,6 +214,50 @@ def jlcpcb_fetch_rotations(force: bool = False) -> dict[str, Any]:
     Rode antes de jlcpcb_export_cpl para que a correção seja aplicada.
     """
     return _guard(lambda: {"path": str(rotations.fetch_table(force=force))})
+
+
+# --- Validação por estágios (ADR 0002) -------------------------------------
+
+
+@mcp.tool()
+def validate(
+    project: str,
+    profile: str = "dev",
+    gate: str = "stage",
+    until: str | None = None,
+    only: list[str] | None = None,
+    skip: list[str] | None = None,
+    out: str | None = None,
+) -> dict[str, Any]:
+    """Valida o projeto KiCad por estágios e devolve um veredito único.
+
+    `project` é o .kicad_pro. Estágios: S0 intake, S1 esquema (ERC), S2 placa (DRC e
+    paridade), S3 fabricação (DRC com o perfil JLCPCB, numa cópia), S4 saída (Gerber e
+    drill), S5 revisão (plugins locais opcionais). Roda sobre uma cópia temporária: o
+    projeto nunca é alterado (só `.mcp-kicad/validate/` recebe as saídas).
+
+    `profile`: `dev` reprova em P0/P1 com confiança >= média; `release` em P0-P2.
+    `gate`: `stage` termina o estágio que reprovou e para; `full` roda tudo que não
+    depende de um check reprovado; `strict` para na primeira reprovação.
+    `until`/`only`/`skip` aceitam ids de check ou estágios (`only` inclui os pré-requisitos).
+    `out` troca a pasta base e precisa ficar dentro do diretório do projeto.
+
+    Retorno: `verdict` (PASS/FAIL/INCOMPLETE), `run_dir`, `report` (report.json),
+    `counts` por severidade, `checks` (status por id), `next_actions` (até 15, só do
+    primeiro estágio reprovado, pior primeiro) e `rerun`.
+    """
+    return _guard(
+        lambda: run_validate(
+            project,
+            profile=profile,
+            gate=gate,
+            until=until,
+            only=only,
+            skip=skip,
+            out=out,
+            restrict_out=True,
+        ).summary()
+    )
 
 
 # --- Sessão viva (IPC) -----------------------------------------------------

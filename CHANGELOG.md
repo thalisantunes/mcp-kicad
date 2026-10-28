@@ -3,6 +3,29 @@
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/);
 versões seguem [SemVer](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] — 2026-10-28
+
+### Adicionado
+
+- Tool MCP e subcomando `mcp-kicad validate`: grafo de checks por estágio (S0 intake,
+  S1 ERC, S2 DRC e paridade, S3 DRC com perfil JLCPCB em cópia, S4 Gerber/drill, S5
+  plugins opcionais), perfis `dev`/`release`, gate `stage`/`full`/`strict`, snapshot
+  somente leitura e saídas `report.json`, `REPORT.md`, `next_actions.json` e `junit.xml`.
+  Exit codes 0/1/2/3/130. Erros `MK-VAL-001/002/003`. Ver ADR 0002.
+- Config do `validate` em duas origens: plugins de agente (`kind: agent`/`command`) e rebaixamento de
+  checks builtin só pela config do usuário (`$MCP_KICAD_REVIEWERS` ou
+  `~/.config/mcp-kicad/reviewers.json`); o `.mcp-kicad/validate.json` do projeto só ajusta
+  `fab_profile`, `skip`/`until` e checks não-builtin. Overrides aceitos vão em `report.json`/`REPORT.md`.
+- `kicad_cli.erc_report` e `kicad_cli.drc_report` (relatório cru), usados por `sch_erc`/`pcb_drc` e pelo `validate`.
+- Adaptador de revisão `llm_json` (comando local, bloco JSON, até 2 reparos), inativo por padrão; roda em
+  sessão própria com ambiente mínimo e encerra o grupo no timeout.
+- Segurança do snapshot: links simbólicos para fora do projeto são recusados (`MK-VAL-002`); `latest` é
+  publicado de forma atômica; na tool MCP, `out` fica restrito ao diretório do projeto.
+
+### Alterado
+
+- `mcp-kicad` agora tem subcomandos `serve` (padrão, comportamento anterior) e `validate`.
+
 ## [0.2.0] — 2026-10-16
 
 ### Atenção ao atualizar

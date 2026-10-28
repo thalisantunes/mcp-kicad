@@ -223,3 +223,43 @@ async def test_tools_over_the_wire(demo_project, tmp_path, server_params) -> Non
     assert second.structured_content["backup_preexistente"] is True
     backup = project / "complex_hierarchy.kicad_dru.bak"
     assert backup.read_text(encoding="utf-8") == "ORIGINAL_USER_RULES"
+
+
+# --- validate (ADR 0002) -----------------------------------------------------
+
+
+def test_validate_end_to_end_on_kicad_demo(demo_project) -> None:
+    from mcp_kicad.validate import run_validate
+
+    project = demo_project("interf_u") / "interf_u.kicad_pro"
+    design = [p for p in project.parent.glob("*.kicad_*") if p.suffix != ".kicad_prl"]
+    before = {p: p.read_bytes() for p in design}
+
+    run = run_validate(project, gate="full", out=project.parent.parent / "out")
+
+    st = {r.id: r.status for r in run.results}
+    assert st["intake.tools"] == st["intake.files"] == "PASS"
+    assert st["sch.erc"] != "ERROR" and st["pcb.drc"] != "ERROR" and st["fab.rules"] != "ERROR"
+    assert run.verdict in ("PASS", "FAIL") and run.exit_code in (0, 1)
+    assert (run.run_dir / "report.json").is_file() and (run.run_dir / "REPORT.md").is_file()
+    assert (run.run_dir / "checks" / "pcb.drc" / "drc.json").is_file()
+    # somente leitura: o projeto original não mudou
+    assert {p: p.read_bytes() for p in before} == before
+    assert not project.with_suffix(".kicad_dru").exists()
+
+
+def test_validate_gerbers_stage_on_kicad_demo(demo_project, user_config) -> None:
+    from mcp_kicad.validate import run_validate
+
+    # O demo reprova DRC/regras JLCPCB; o usuário rebaixa os pré-requisitos para chegar ao Gerber.
+    prereqs = ("sch.erc", "pcb.drc", "fab.rules")
+    user_config({"checks": [{"id": c, "gate": "warn"} for c in prereqs]})
+    project = demo_project("interf_u") / "interf_u.kicad_pro"
+    run = run_validate(project, only=["fab.gerbers"], out=project.parent.parent / "out")
+    st = {r.id: r.status for r in run.results}
+    # --only inclui os pré-requisitos duros, mas não o irmão pcb.parity
+    assert st["pcb.drc"] != "SKIPPED" and st["fab.rules"] != "SKIPPED"
+    assert st["pcb.parity"] == "SKIPPED"
+    result = next(r for r in run.results if r.id == "fab.gerbers")
+    assert result.status == "PASS", result.error or [f.title for f in result.findings]
+    assert result.data["files"]

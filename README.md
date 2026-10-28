@@ -210,10 +210,115 @@ Gerber, drill e CPL do pacote usam a **mesma origem, a absoluta** (a aux origin
 do board é ignorada de propósito), para que as posições do CPL caiam sobre os
 Gerbers. Detalhes em [`docs/rotacoes-cpl.md`](docs/rotacoes-cpl.md).
 
+### Validação por estágios
+| Tool | O que faz |
+|---|---|
+| `validate` | Veredito único (`PASS`/`FAIL`/`INCOMPLETE`) rodando os checks na ordem certa e parando no primeiro estágio que reprova. Ver [validate](#validate). |
+
 ### Sessão viva (IPC)
 | Tool | O que faz |
 |---|---|
 | `board_summary` | Contagem de footprints/tracks/vias/nets no board **aberto**. Exige [habilitar a IPC API](#habilitar-a-ipc-api). |
+
+## validate
+
+Pergunta "a placa está pronta para a fábrica?" localmente: sem rede, sem conta e
+**somente leitura**. O projeto é copiado para um diretório temporário (sem
+`3dmodels/`, `*.step`, `*.stp`, `*.wrl`, `.git/` e `.mcp-kicad/`) e todos os
+checks rodam nessa cópia; um hash do snapshot antes e depois de cada check vira
+`ERROR` (`MK-VAL-002`) se mudar, e o run para de usá-lo. Links simbólicos que
+apontem para fora do projeto são recusados (`MK-VAL-002`). Decisão em
+[ADR 0002](docs/adr/0002-validate-grafo-de-verificacoes.md).
+
+**Uso MCP:** `validate(project, profile="dev", gate="stage", until=None, only=None, skip=None, out=None)`.
+**Uso CLI:**
+
+```bash
+uv run mcp-kicad validate caminho/projeto.kicad_pro            # dev, gate stage
+uv run mcp-kicad validate projeto.kicad_pro --profile release --gate full --junit ci/junit.xml
+uv run mcp-kicad validate projeto.kicad_pro --only S2,fab.gerbers --json
+```
+
+`mcp-kicad` sem subcomando (ou `mcp-kicad serve`) continua subindo o servidor MCP.
+
+| Estágio | Checks | Bloqueia |
+|---|---|---|
+| S0 intake | `intake.tools` (kicad-cli >= 10), `intake.files` | tudo |
+| S1 esquema | `sch.erc` | S2+ |
+| S2 placa | `pcb.drc` (com o `.kicad_dru` do projeto), `pcb.parity` | S3+ |
+| S3 fabricação | `fab.rules`: DRC com o perfil JLCPCB aplicado numa **cópia** (só conta o que o perfil acrescenta) | S4 |
+| S4 saída | `fab.gerbers`: exporta Gerber/drill e confere camadas e furação | n/a |
+| S5 revisão | plugins opcionais (`review.*`); sem plugin, fica `SKIPPED` | n/a |
+
+**Perfis:** `dev` reprova em P0/P1 com confiança >= média; `release` em P0-P2 com
+qualquer confiança. P0 = não funciona ou a fábrica rejeita; P1 = risco de
+confiabilidade/montagem; P2 = um revisor apontaria; P3 = acabamento. Do KiCad:
+`error` vira P0, `warning` vira P1 (DRC) ou P2 (ERC), exclusões são ignoradas.
+
+**Gate:** `stage` termina o estágio que reprovou e para; `full` roda tudo que não
+depende de um check reprovado; `strict` para na primeira reprovação.
+`--until`, `--only` e `--skip` aceitam ids de check ou estágios (`S2`); `--only` e
+`--skip` aceitam lista separada por vírgula. `--only` inclui os pré-requisitos
+duros (`--only fab.gerbers` roda também `pcb.drc` e `fab.rules`); o dependente de
+um check pulado fica `SKIPPED` com `blocked_by`, nunca roda sem o pré-requisito.
+Na tool MCP, `out` precisa ficar dentro do diretório do projeto.
+
+**Saídas** em `<projeto>/.mcp-kicad/validate/runs/<UTC>-<hash>/` (ou em `--out`),
+com `latest` apontando para o último run (symlink atômico; arquivo com o caminho
+onde symlink não existe; se não der, vira `warnings` no relatório):
+
+- `report.json` (schema `mcp-kicad.validate/v1`): veredito, perfil, gate, hash do projeto, versões, `overrides` de configuração aceitos, `warnings`, estágios e achados;
+- `REPORT.md`: tabela por check e, por achado, Onde / Por quê / Evidência / Regra / Ação;
+- `next_actions.json`: só o primeiro estágio reprovado, até 15 ações, pior primeiro, com `checks_blocked_downstream` e `rerun`;
+- `junit.xml` com `--junit PATH`;
+- `checks/<id>/`: JSON cru do `kicad-cli`.
+
+**Exit codes:** 0 PASS (só PASS/WARN; `ERROR` de check com `gate: warn` vale WARN), 1 FAIL, 2 erro de uso/config (flag
+inválida, JSON de override inválido, ciclo no grafo, check desconhecido), 3
+INCOMPLETO (check bloqueante pulado por `--until`/`--only`/`--skip` ou sem pré-requisito), 130 interrompido (relatório
+parcial marcado).
+
+**Configuração (duas origens, com confiança diferente).** O projeto validado não é
+confiável, então ele não pode mandar executar nada nem afrouxar o gate. JSON, não
+YAML (o PyYAML não é dependência).
+
+- **Do usuário** (`$MCP_KICAD_REVIEWERS` com o caminho de um JSON, ou
+  `~/.config/mcp-kicad/reviewers.json`): é a ÚNICA origem de plugins de agente e a
+  única que pode desabilitar ou rebaixar (`gate: warn`) checks builtin.
+
+  ```json
+  {"checks": [
+    {"id": "review.power", "stage": "S5", "kind": "agent", "gate": "warn",
+     "requires": ["pcb.drc"], "command": ["revisor-local", "--stdin"],
+     "env_passthrough": ["ANTHROPIC_API_KEY"], "timeout_s": 600,
+     "prompt": "Revise a alimentação e o desacoplamento."}
+  ]}
+  ```
+
+  `command[0]` é só o nome de um executável do `PATH` (sem `/`); `timeout_s` é inteiro
+  positivo; o comando recebe apenas `PATH`, `HOME`, `LANG` e as variáveis listadas em
+  `env_passthrough`.
+- **Do projeto** (`<projeto>/.mcp-kicad/validate.json`): só `fab_profile`, `skip`/`until`
+  padrão (a linha de comando vence) e ajustes `{"id", "gate", "enabled"}` de checks
+  NÃO-builtin já definidos pela config do usuário. `command`, `kind: agent`, check
+  novo ou qualquer mudança em `intake.*`, `sch.erc`, `pcb.drc`, `pcb.parity`,
+  `fab.rules`, `fab.gerbers` dá `MK-VAL-001`.
+
+  ```json
+  {"fab_profile": "4layer", "until": "S4"}
+  ```
+
+Todo override aceito aparece em `report.json` (`overrides`) e no `REPORT.md`. Ciclo,
+dependência de estágio posterior ou id inválido também dão `MK-VAL-001`.
+
+**Plugins de revisão (S5):** interface `Reviewer.run(snapshot, context) -> list[Finding]`
+(`validate/plugins/`). O adaptador `llm_json` roda o `command` configurado
+(qualquer comando local que leia o prompt do stdin e escreva a resposta no stdout)
+em sessão própria (no timeout ou Ctrl+C o grupo inteiro é encerrado), com o snapshot
+como diretório atual; envia o prompt mais os achados dos builtins e exige um bloco
+```` ```json ```` com `{"findings": [...]}` no schema de achado. Resposta inválida
+gera até 2 reparos; depois disso, `MK-VAL-003`. Nenhum plugin vem ativo: só existe o
+que a config do USUÁRIO declara.
 
 ## Fluxo gabinete
 
@@ -275,6 +380,7 @@ KiCad; pulam sozinhos quando o `kicad-cli` não existe.
 
 - [Changelog](CHANGELOG.md)
 - [ADR 0001 — IPC API + kicad-cli](docs/adr/0001-ipc-api-mais-kicad-cli.md)
+- [ADR 0002 — validate: grafo de verificações](docs/adr/0002-validate-grafo-de-verificacoes.md)
 - [Correção de rotação para CPL (JLCPCB)](docs/rotacoes-cpl.md)
 - [Probe do nightly 10.99 — o que a IPC já entrega](docs/probe-nightly-10.99.md)
 - [Levantamento de integrações KiCad ↔ LLM](docs/research-integracoes.md)

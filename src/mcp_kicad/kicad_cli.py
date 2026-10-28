@@ -191,23 +191,8 @@ def pcb_drc(
     """
     board = _require(pcb, ".kicad_pcb")
     with _report_file(report_path, f"{board.stem}.drc.json", board) as out:
-        args = [
-            "pcb",
-            "drc",
-            "--format",
-            "json",
-            "--output",
-            str(out),
-            "--exit-code-violations",
-        ]
-        args.append("--severity-all" if all_severities else "--severity-error")
-        args.append(str(board))
-
-        result = run(args, check=False)
-        # 0 = limpo, 5 = violações encontradas. Qualquer outro é falha real.
-        if result.returncode not in (0, 5):
-            raise _failure(f"DRC falhou ({result.returncode}) em {board.name}", result)
-        return _summarize(_read_report(out, kind="DRC"), out)
+        report = drc_report(board, out, parity=False, all_severities=all_severities)
+        return _summarize(report, out)
 
 
 def sch_erc(
@@ -222,22 +207,39 @@ def sch_erc(
     """
     schematic = _require(sch, ".kicad_sch")
     with _report_file(report_path, f"{schematic.stem}.erc.json", schematic) as out:
-        args = [
-            "sch",
-            "erc",
-            "--format",
-            "json",
-            "--output",
-            str(out),
-            "--exit-code-violations",
-        ]
-        args.append("--severity-all" if all_severities else "--severity-error")
-        args.append(str(schematic))
+        report = erc_report(schematic, out, all_severities=all_severities)
+        return _summarize(report, out)
 
-        result = run(args, check=False)
-        if result.returncode not in (0, 5):
-            raise _failure(f"ERC falhou ({result.returncode}) em {schematic.name}", result)
-        return _summarize(_read_report(out, kind="ERC"), out)
+
+def drc_report(
+    pcb: Path, out: Path, parity: bool = True, all_severities: bool = True
+) -> dict[str, Any]:
+    """Roda o DRC e devolve o relatório JSON cru (gravado em `out`).
+
+    Sem validar o caminho de saída: quem chama escolhe `out`. `parity` liga a
+    comparação com o esquemático (`--schematic-parity`).
+    """
+    args = ["pcb", "drc", "--format", "json", "--output", str(out), "--exit-code-violations"]
+    args.append("--severity-all" if all_severities else "--severity-error")
+    if parity:
+        args.append("--schematic-parity")
+    args.append(str(pcb))
+    result = run(args, check=False)
+    # 0 = limpo, 5 = violações encontradas. Qualquer outro é falha real.
+    if result.returncode not in (0, 5):
+        raise _failure(f"DRC falhou ({result.returncode}) em {pcb.name}", result)
+    return _read_report(out, kind="DRC")
+
+
+def erc_report(sch: Path, out: Path, all_severities: bool = True) -> dict[str, Any]:
+    """Roda o ERC e devolve o relatório JSON cru (gravado em `out`)."""
+    args = ["sch", "erc", "--format", "json", "--output", str(out), "--exit-code-violations"]
+    args.append("--severity-all" if all_severities else "--severity-error")
+    args.append(str(sch))
+    result = run(args, check=False)
+    if result.returncode not in (0, 5):
+        raise _failure(f"ERC falhou ({result.returncode}) em {sch.name}", result)
+    return _read_report(out, kind="ERC")
 
 
 @contextmanager

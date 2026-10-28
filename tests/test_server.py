@@ -18,7 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_kicad import server
 from mcp_kicad.errors import InvalidPath
 
-EXPECTED_TOOL_COUNT = 16
+EXPECTED_TOOL_COUNT = 17
 
 
 def test_guard_turns_project_errors_into_tool_error() -> None:
