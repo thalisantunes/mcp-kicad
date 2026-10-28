@@ -55,6 +55,9 @@ def _validate(args: argparse.Namespace) -> int:
     except McpKicadError as exc:
         print(exc, file=sys.stderr)
         return 2
+    except Exception as exc:  # OSError (saída ilegível/inexistente) e bugs: sem traceback cru
+        print(f"erro inesperado: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
     summary = run.summary()
     if args.json:
         print(json.dumps(summary, indent=2, ensure_ascii=False))

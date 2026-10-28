@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,6 +19,15 @@ _LOCATOR_KEYS = {
     "x_mm": None,
     "y_mm": None,
 }
+
+
+def _is_finite_number(val: Any) -> bool:
+    if isinstance(val, bool) or not isinstance(val, int | float):
+        return False
+    try:
+        return math.isfinite(val)
+    except OverflowError:  # int gigante demais para float
+        return False
 
 
 @dataclass(slots=True)
@@ -41,8 +51,29 @@ class Finding:
         ):
             if value not in allowed:
                 raise ValueError(f"{name} inválido: {value!r} (use {', '.join(allowed)})")
-        if not self.title:
-            raise ValueError("title é obrigatório")
+        if not isinstance(self.title, str) or not self.title:
+            raise ValueError("title é obrigatório (texto não vazio)")
+        for name in ("detail", "evidence", "rule", "suggested_action"):
+            value = getattr(self, name)
+            if value is None:
+                setattr(self, name, "")
+            elif not isinstance(value, str):
+                raise ValueError(f"{name} deve ser texto")
+        self._check_locator()
+
+    def _check_locator(self) -> None:
+        loc = self.locator
+        for key in ("refs", "nets"):
+            val = loc.get(key, [])
+            if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+                raise ValueError(f"locator.{key} deve ser lista de textos")
+        for key in ("sheet", "layer"):
+            if loc.get(key) is not None and not isinstance(loc[key], str):
+                raise ValueError(f"locator.{key} deve ser texto ou null")
+        for key in ("x_mm", "y_mm"):
+            val = loc.get(key)
+            if val is not None and not _is_finite_number(val):
+                raise ValueError(f"locator.{key} deve ser número finito ou null")
 
     def to_dict(self) -> dict[str, Any]:
         locator = {k: (list(v) if isinstance(v, list) else v) for k, v in _LOCATOR_KEYS.items()}
@@ -76,16 +107,20 @@ class Finding:
 
 
 def map_severity(kicad_severity: str | None, *, warning_as: str = "P1") -> str | None:
-    """error→P0; warning→`warning_as` (P1 no DRC, P2 no ERC); exclusion→None (ignorado)."""
+    """error→P0; warning→`warning_as` (P1 no DRC, P2 no ERC); exclusion→None (ignorado).
+
+    Severidade desconhecida (versão futura do KiCad) vira P2: não some nem reprova no `dev`.
+    """
     if kicad_severity == "error":
         return "P0"
     if kicad_severity == "warning":
         return warning_as
     if kicad_severity in ("exclusion", "ignore"):
         return None
-    return "P3"
+    return "P3" if kicad_severity == "info" else "P2"
 
 
+_KNOWN_KICAD_SEVERITIES = frozenset({"error", "warning", "exclusion", "ignore", "info"})
 _REF_RE = re.compile(r"\b(?:of|Symbol|Footprint)\s+([A-Za-z#]+\d+[\w.-]*)")
 _NET_RE = re.compile(r"\[([^\]]+)\]")
 _LAYER_RE = re.compile(r"\b((?:F|B|In\d+)\.Cu|Edge\.Cuts|[FB]\.(?:Mask|Silkscreen))\b")
@@ -117,7 +152,12 @@ def from_kicad(
         id=f"{check_id}/{index:03d}",
         severity=severity,
         title=description,
-        detail=f"Regra `{kind}` do KiCad reportada como {violation.get('severity')}.",
+        detail=f"Regra `{kind}` do KiCad reportada como {violation.get('severity')}."
+        + (
+            ""
+            if violation.get("severity") in _KNOWN_KICAD_SEVERITIES
+            else " Severidade desconhecida: tratada como P2."
+        ),
         locator={
             "sheet": sheet,
             "refs": sorted(set(_REF_RE.findall(text))),

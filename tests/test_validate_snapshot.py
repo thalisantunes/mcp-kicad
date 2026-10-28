@@ -169,13 +169,71 @@ def test_digest_has_no_structural_collisions(tmp_path) -> None:
 
 def test_digest_ignores_volatile_files_case_insensitively(tmp_path) -> None:
     src = _src(tmp_path)
+    names = ("A.KICAD_PRL", "x.LCK", "FP-INFO-CACHE")
     snap = Snapshot.create(src)
     try:
         before = snap.digest()
-        for name in ("A.KICAD_PRL", "x.LCK", "FP-INFO-CACHE", "fp-info-cache"):
+        for name in names:
             (snap.root / name).write_text("ruído")
         assert snap.digest() == before
         (snap.root / "novo.kicad_sch").write_text("")  # arquivo vazio novo muda o hash
         assert snap.digest() != before
+    finally:
+        snap.cleanup()
+
+
+def test_volatile_named_symlink_or_directory_is_not_ignored(tmp_path) -> None:
+    snap = Snapshot.create(_src(tmp_path))
+    try:
+        before = snap.digest()
+        (snap.root / "x.lck").symlink_to(tmp_path)
+        with_link = snap.digest()
+        assert with_link != before
+        (snap.root / "y.kicad_prl").mkdir()
+        assert snap.digest() != with_link
+    finally:
+        snap.cleanup()
+
+
+def test_digest_covers_symlinks_and_directories(tmp_path) -> None:
+    snap = Snapshot.create(_src(tmp_path))
+    try:
+        d0 = snap.digest()
+        (snap.root / "vazio").mkdir()
+        d1 = snap.digest()
+        assert d1 != d0  # diretório vazio novo
+        (snap.root / "ln").symlink_to(tmp_path / "fora.txt")  # pendente, para fora
+        d2 = snap.digest()
+        assert d2 != d1
+        (snap.root / "ln").unlink()
+        (snap.root / "ln").symlink_to(tmp_path / "outro.txt")
+        assert snap.digest() not in (d1, d2)  # mudar só o destino muda o hash
+    finally:
+        snap.cleanup()
+
+
+def test_digest_changes_with_file_mode(tmp_path) -> None:
+    (tmp_path / "a.kicad_pro").write_text("pro")
+    snap = Snapshot.create(tmp_path)
+    try:
+        before = snap.digest()
+        (snap.root / "a.kicad_pro").chmod(0o755)
+        assert snap.digest() != before
+    finally:
+        snap.cleanup()
+
+
+def test_file_link_into_excluded_dir_is_left_out_of_the_copy(tmp_path) -> None:
+    (tmp_path / "a.kicad_pro").write_text("pro")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("segredo")
+    (tmp_path / ".mcp-kicad").mkdir()
+    (tmp_path / ".mcp-kicad" / "validate.json").write_text("{}")
+    (tmp_path / "g").symlink_to(tmp_path / ".git" / "config")
+    (tmp_path / "m").symlink_to(tmp_path / ".mcp-kicad" / "validate.json")
+    (tmp_path / "ok").symlink_to(tmp_path / "a.kicad_pro")
+    snap = Snapshot.create(tmp_path)
+    try:
+        assert {p.name for p in snap.root.iterdir()} == {"a.kicad_pro", "ok"}
     finally:
         snap.cleanup()

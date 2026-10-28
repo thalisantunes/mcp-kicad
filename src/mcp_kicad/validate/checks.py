@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,22 +147,39 @@ def pcb_parity(ctx: Context) -> CheckOutput:
 
 
 def _key(v: dict[str, Any]) -> tuple:
-    pos = next((i.get("pos") for i in v.get("items", []) if "pos" in i), None)
-    return (v.get("type"), v.get("description"), (pos or {}).get("x"), (pos or {}).get("y"))
+    """Identidade de uma violação: tipo, severidade, texto e TODOS os itens (uuid e posição)."""
+    items = sorted(
+        (str(i.get("uuid")), str((i.get("pos") or {}).get("x")), str((i.get("pos") or {}).get("y")))
+        for i in v.get("items", [])
+    )
+    return (v.get("type"), v.get("severity"), v.get("description"), tuple(items))
 
 
 def fab_rules(ctx: Context) -> CheckOutput:
-    """DRC com o perfil JLCPCB numa CÓPIA do snapshot; só conta o que o perfil acrescenta."""
+    """DRC com o perfil JLCPCB numa CÓPIA do snapshot; só conta o que o perfil acrescenta.
+
+    O perfil é ANEXADO ao `.kicad_dru` do projeto (sem o segundo `(version 1)`), então as regras
+    do projeto continuam valendo e o diff contra o baseline mostra só o que o perfil acrescenta.
+    """
     clone = ctx.snapshot.clone("fab-rules")
     pcb = clone / ctx.pcb.relative_to(ctx.snapshot.root)
-    pcb.with_suffix(".kicad_dru").write_text(jlcpcb.rules_text(ctx.fab_profile), encoding="utf-8")
+    dru, rules = pcb.with_suffix(".kicad_dru"), jlcpcb.rules_text(ctx.fab_profile)
+    if dru.is_file():
+        rules = re.sub(r"(?m)^\s*\(version\s+\d+\)", "", rules)
+        rules = dru.read_text(encoding="utf-8") + "\n" + rules
+    dru.write_text(rules, encoding="utf-8")
     out = ctx.check_dir("fab.rules") / "drc.json"
     report = kicad_cli.drc_report(pcb, out, parity=False)
     baseline = ctx.drc_report()
-    known = {
+    known = Counter(
         _key(v) for v in [*baseline.get("violations", []), *baseline.get("unconnected_items", [])]
-    }
-    new = [v for v in report.get("violations", []) if _key(v) not in known]
+    )
+    new = []
+    for v in report.get("violations", []):  # multiconjunto: duplicata extra também é nova
+        if known[key := _key(v)] > 0:
+            known[key] -= 1
+        else:
+            new.append(v)
     return CheckOutput(
         _findings("fab.rules", new, warning_as="P1"), {"fab_profile": ctx.fab_profile}
     )

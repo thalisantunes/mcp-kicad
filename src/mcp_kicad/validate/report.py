@@ -228,8 +228,8 @@ def _md_finding(f: Finding) -> list[str]:
         p
         for p in (
             f"folha {loc['sheet']}" if loc["sheet"] else "",
-            "refs " + ",".join(loc["refs"]) if loc["refs"] else "",
-            "nets " + ",".join(loc["nets"]) if loc["nets"] else "",
+            "refs " + ",".join(map(str, loc["refs"])) if loc["refs"] else "",
+            "nets " + ",".join(map(str, loc["nets"])) if loc["nets"] else "",
             f"camada {loc['layer']}" if loc["layer"] else "",
             f"({loc['x_mm']}, {loc['y_mm']}) mm" if loc["x_mm"] is not None else "",
         )
@@ -264,7 +264,7 @@ def render_markdown(run: RunResult) -> str:
         note = r.error or r.reason
         lines.append(
             f"| {r.stage} | `{r.id}` | {r.status} | {k['P0']} | {k['P1']} | {k['P2']} | {k['P3']}"
-            f" | {note.replace('|', '/')} |"
+            f" | {' '.join(note.split()).replace('|', '/')} |"
         )
     for s in run.stages():
         if s["status"] == "SKIPPED" and s["reason"].startswith("nenhum"):
@@ -326,8 +326,8 @@ def _update_latest(run_dir: Path) -> str | None:
     latest = run_dir.parent.parent / "latest"
     tmp = latest.with_name(f"latest.tmp-{os.getpid()}")
     try:
-        if latest.is_dir() and not latest.is_symlink():
-            raise IsADirectoryError(f"{latest} é um diretório real")
+        if os.path.lexists(latest) and not latest.is_symlink():  # arquivo/diretório do usuário
+            raise FileExistsError(f"{latest} existe e não é link simbólico")
         tmp.unlink(missing_ok=True)
         try:
             os.symlink(Path("runs") / run_dir.name, tmp, target_is_directory=True)
@@ -343,11 +343,13 @@ def _update_latest(run_dir: Path) -> str | None:
 def _write_files(run: RunResult, junit: Path | None) -> None:
     d = run.run_dir
     (d / "report.json").write_text(
-        json.dumps(run.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(run.to_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
     (d / "REPORT.md").write_text(render_markdown(run), encoding="utf-8")
     (d / "next_actions.json").write_text(
-        json.dumps(run.next_actions(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        json.dumps(run.next_actions(), indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
     if junit:
         junit.parent.mkdir(parents=True, exist_ok=True)

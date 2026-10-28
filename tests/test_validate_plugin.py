@@ -183,3 +183,97 @@ def test_interrupt_kills_the_whole_process_group(tmp_path, monkeypatch) -> None:
     with pytest.raises(KeyboardInterrupt):
         r.run(tmp_path, {"check_id": "review.x"})
     assert not _alive(int(pidfile.read_text()))
+
+
+def test_plugin_findings_with_wrong_locator_types_go_through_repair_and_give_up(
+    tmp_path, monkeypatch
+) -> None:
+    marker = tmp_path / "n"
+    bad = (
+        '```json\n{"findings": [{"severity": "P2", "title": "t", '
+        '"locator": {"refs": [1, 2]}}]}\n```'
+    )
+    r = reviewer(
+        tmp_path,
+        f"import pathlib\nm = pathlib.Path({str(marker)!r})\n"
+        "n = int(m.read_text()) if m.exists() else 0\nm.write_text(str(n + 1))\n"
+        f"print({bad!r})\n",
+        monkeypatch,
+    )
+    with pytest.raises(PluginOutputInvalid, match="MK-VAL-003"):
+        r.run(tmp_path, {"check_id": "review.x"})
+    assert marker.read_text() == "3"  # 1 tentativa + 2 reparos
+
+
+def test_parse_keeps_a_fence_inside_a_json_string() -> None:
+    text = (
+        'pensando\n```json\n{"findings": [{"severity": "P2", "title": "t", '
+        '"evidence": "trecho:\\n```\\ncódigo\\n```"}]}\n```\n'
+    )
+    (f,) = LlmJsonReviewer.parse(text, "review.x")
+    assert "```" in f.evidence
+
+
+def test_parse_uses_the_first_decodable_block_and_ignores_later_examples() -> None:
+    real = '```json\n{"findings": [{"severity": "P0", "title": "real"}]}\n```'
+    (f,) = LlmJsonReviewer.parse(f"{real}\nexemplo de formato:\n{GOOD}", "review.x")
+    assert f.title == "real"
+
+
+def test_parse_skips_undecodable_blocks_before_the_real_one() -> None:
+    text = '```json\n{nope\n```\n```json\n{"x": 1}\n```\n' + GOOD
+    (f,) = LlmJsonReviewer.parse(text, "review.x")
+    assert f.title == "t"
+
+
+def test_parse_marker_inside_a_string_still_decodes() -> None:
+    text = (
+        '```json\n{"findings": [{"severity": "P2", "title": "t", '
+        '"evidence": "veja ```json {\\"findings\\": []} acima"}]}\n```'
+    )
+    (f,) = LlmJsonReviewer.parse(text, "review.x")
+    assert f.title == "t" and "```json" in f.evidence
+
+
+def test_ask_ignores_relative_and_empty_path_entries(tmp_path, monkeypatch) -> None:
+    snap = tmp_path / "snap"
+    (snap / "bin").mkdir(parents=True)
+    planted = snap / "bin" / "fake-reviewer"
+    planted.write_text(f"#!{sys.executable}\nopen('PWNED', 'w').write('x')\nprint('{GOOD}')")
+    planted.chmod(0o755)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{os.pathsep}.")
+    rev = LlmJsonReviewer(["fake-reviewer"], "revise")
+    with pytest.raises(PluginOutputInvalid, match="não encontrado"):
+        rev._ask("x", snap)
+    assert not (snap / "PWNED").exists()
+    # com um diretório absoluto válido no PATH, roda o executável absoluto (não o do snapshot)
+    good = reviewer(tmp_path, "print('ok')", monkeypatch)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{os.environ['PATH']}")
+    assert good._ask("x", snap).strip() == "ok" and not (snap / "PWNED").exists()
+
+
+def test_terminate_without_killpg_falls_back_to_kill(tmp_path, monkeypatch) -> None:
+    monkeypatch.delattr(os, "killpg")
+    r = reviewer(tmp_path, "import time; time.sleep(60)", monkeypatch, timeout_s=1)
+    with pytest.raises(PluginOutputInvalid, match="excedeu 1s"):
+        r.run(tmp_path, {"check_id": "review.x"})
+
+
+def test_terminate_does_not_hang_when_communicate_times_out_after_kill() -> None:
+    from mcp_kicad.validate.plugins import llm_json
+
+    class Stuck:
+        pid = 2**22 + 12345  # inexistente: killpg → ProcessLookupError → kill()
+        killed = False
+        timeouts: list = []
+
+        def kill(self):
+            self.killed = True
+
+        def communicate(self, *a, timeout=None):
+            self.timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("x", timeout)
+
+    proc = Stuck()
+    llm_json._terminate(proc)  # type: ignore[arg-type]
+    assert proc.killed and proc.timeouts == [5]

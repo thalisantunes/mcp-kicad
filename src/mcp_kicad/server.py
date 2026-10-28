@@ -240,7 +240,7 @@ def validate(
     `gate`: `stage` termina o estágio que reprovou e para; `full` roda tudo que não
     depende de um check reprovado; `strict` para na primeira reprovação.
     `until`/`only`/`skip` aceitam ids de check ou estágios (`only` inclui os pré-requisitos).
-    `out` troca a pasta base e precisa ficar dentro do diretório do projeto.
+    `out` troca a pasta base e precisa ficar sob `<projeto>/.mcp-kicad/`.
 
     Retorno: `verdict` (PASS/FAIL/INCOMPLETE), `run_dir`, `report` (report.json),
     `counts` por severidade, `checks` (status por id), `next_actions` (até 15, só do

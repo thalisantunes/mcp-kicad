@@ -7,6 +7,8 @@ import os
 import shlex
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from mcp_kicad.validate import run_validate
 from mcp_kicad.validate.checks import CheckOutput
 from mcp_kicad.validate.finding import Finding
@@ -204,3 +206,24 @@ def test_rerun_hint_uses_shell_quoting_and_keeps_selection(fake_project, tmp_pat
     hint = run.rerun_hint()
     assert shlex.split(hint)[-1] == run.junit and "'" in hint  # citado, não injetável
     assert "--until S3" in hint and "--skip S4" in hint and "--only sch.erc" in hint
+
+
+def test_note_cell_collapses_newlines_and_pipes(fake_project, tmp_path) -> None:
+    def boom(ctx):
+        raise RuntimeError("linha1\nlinha2 | coluna\r\n  fim")
+
+    reg = _reg({})
+    reg["sch.erc"] = boom
+    run = run_validate(fake_project, out=tmp_path / "o", checks=reg)
+    md = (run.run_dir / "REPORT.md").read_text()
+    row = next(line for line in md.splitlines() if line.startswith("| S1 | `sch.erc`"))
+    assert row.endswith("RuntimeError: linha1 linha2 / coluna fim |")
+
+
+def test_report_json_rejects_nan(fake_project, tmp_path) -> None:
+    from mcp_kicad.validate.report import _write_files
+
+    run = run_validate(fake_project, out=tmp_path / "o", checks=_reg({}))
+    run.results[0].data = {"x": float("nan")}
+    with pytest.raises(ValueError, match="Out of range"):
+        _write_files(run, None)

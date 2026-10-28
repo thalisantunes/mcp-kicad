@@ -17,7 +17,7 @@ Duas camadas de transporte, por decisão de arquitetura ([ADR 0001](docs/adr/000
 
 Nada de bindings SWIG do `pcbnew`: elas são **removidas no KiCad 11**.
 
-**Status:** 16 tools. As de arquivo (DRC, ERC, export), os perfis JLCPCB e o
+**Status:** 17 tools (a 17ª é `validate`). As de arquivo (DRC, ERC, export), os perfis JLCPCB e o
 BOM/CPL com correção de rotação estão implementados e **verificados contra o
 KiCad 10.0.5**, nos testes de integração que rodam nos demos `cm5_minima` e
 `complex_hierarchy`. A camada IPC tem só `board_summary` e ainda não foi
@@ -261,6 +261,8 @@ depende de um check reprovado; `strict` para na primeira reprovação.
 `--skip` aceitam lista separada por vírgula. `--only` inclui os pré-requisitos
 duros (`--only fab.gerbers` roda também `pcb.drc` e `fab.rules`); o dependente de
 um check pulado fica `SKIPPED` com `blocked_by`, nunca roda sem o pré-requisito.
+`--only` mantém o gate de estágio sobre os dependentes (o gate `stage` ainda pula
+estágios posteriores a um reprovado).
 Na tool MCP, `out` precisa ficar dentro do diretório do projeto.
 
 **Saídas** em `<projeto>/.mcp-kicad/validate/runs/<UTC>-<hash>/` (ou em `--out`),

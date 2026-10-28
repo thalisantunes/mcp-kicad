@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -15,7 +16,7 @@ from ...errors import PluginOutputInvalid, ValidateGraphInvalid
 from ..finding import Finding
 
 MAX_REPAIRS = 2
-_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_MARKER_RE = re.compile(r"```json\s*", re.IGNORECASE)
 _SCHEMA_HINT = (
     'Responda SOMENTE com um bloco ```json contendo {"findings": [{"severity": "P0|P1|P2|P3", '
     '"title": "...", "detail": "...", "locator": {"sheet": null, "refs": [], "nets": [], '
@@ -30,10 +31,25 @@ _BASE_ENV = ("PATH", "HOME", "LANG")
 def _terminate(proc: subprocess.Popen) -> None:
     """Mata o grupo inteiro (o comando pode ter filhos) e recolhe o processo."""
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
     except (ProcessLookupError, PermissionError):
         proc.kill()
-    proc.communicate()
+    with contextlib.suppress(subprocess.TimeoutExpired):  # neto segurando o pipe: não trava
+        proc.communicate(timeout=5)
+
+
+def _resolve_executable(name: str, path: str | None) -> str | None:
+    """`shutil.which` só em entradas ABSOLUTAS do PATH, devolvendo caminho absoluto.
+
+    Entradas vazias ou relativas (`""`, `bin`) valeriam em relação ao `cwd` do filho, que é o
+    snapshot do projeto não confiável: um executável plantado lá seria rodado.
+    """
+    dirs = [d for d in (path or "").split(os.pathsep) if d and os.path.isabs(d)]
+    exe = shutil.which(name, path=os.pathsep.join(dirs)) if dirs else None
+    return os.path.abspath(exe) if exe else None
 
 
 class LlmJsonReviewer:
@@ -83,7 +99,7 @@ class LlmJsonReviewer:
 
     def _ask(self, text: str, cwd: Path) -> str:
         env = self._env()
-        exe = shutil.which(self.command[0], path=env.get("PATH"))
+        exe = _resolve_executable(self.command[0], env.get("PATH"))
         if exe is None:
             raise PluginOutputInvalid(f"comando {self.command[0]!r} não encontrado no PATH")
         try:
@@ -119,13 +135,27 @@ class LlmJsonReviewer:
 
     @staticmethod
     def parse(output: str, check_id: str) -> list[Finding]:
-        blocks = _BLOCK_RE.findall(output)
-        if not blocks:
+        markers = list(_MARKER_RE.finditer(output))
+        if not markers:
             raise ValueError("nenhum bloco ```json encontrado")
-        data = json.loads(blocks[-1])
-        items = data.get("findings") if isinstance(data, dict) else None
-        if not isinstance(items, list):
-            raise ValueError('o JSON precisa ser {"findings": [...]}')
+        # Do primeiro ao último marcador: vale o PRIMEIRO bloco que decodifica num objeto com
+        # `findings`; os demais (exemplos, rascunhos) são ignorados mesmo se também forem válidos.
+        # raw_decode para no fim do JSON: um ``` dentro de uma string não corta o bloco.
+        items = None
+        error = 'o JSON precisa ser {"findings": [...]}'
+        for marker in markers:
+            try:
+                data, _ = json.JSONDecoder().raw_decode(output, marker.end())
+            except ValueError as exc:
+                error = str(exc)
+                continue
+            found = data.get("findings") if isinstance(data, dict) else None
+            if isinstance(found, list):
+                items = found
+                break
+            error = 'o JSON precisa ser {"findings": [...]}'
+        if items is None:
+            raise ValueError(error)
         return [
             Finding.from_dict(item, id=f"{check_id}/{i:03d}", source="agent")
             for i, item in enumerate(items, 1)

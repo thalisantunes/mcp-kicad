@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
-from ..errors import InvalidPath, McpKicadError, SnapshotMutated, ValidateGraphInvalid
+from ..errors import (
+    InvalidPath,
+    McpKicadError,
+    OutputOutsideProject,
+    SnapshotMutated,
+    ValidateGraphInvalid,
+)
 from .checks import BUILTIN, CheckFn, CheckOutput, Context
 from .config import build_graph, load_project_config, load_user_config
 from .finding import CONFIDENCES, Finding
@@ -94,12 +100,13 @@ def _evaluate(spec: CheckSpec, out: CheckOutput, profile: str) -> CheckResult:
     )
 
 
-def _execute(
-    spec: CheckSpec, fn: CheckFn, ctx: Context, profile: str
-) -> tuple[CheckResult, bool]:
+def _execute(spec: CheckSpec, fn: CheckFn, ctx: Context, profile: str) -> tuple[CheckResult, bool]:
     """Roda um check. O booleano diz se ele alterou o snapshot (mesmo lançando exceção)."""
-    before = ctx.snapshot.digest()
     start = time.monotonic()
+    try:
+        before = ctx.snapshot.digest()
+    except OSError as exc:  # não dá para garantir a integridade: nem roda o check
+        return _unverifiable(spec, exc, start), True
     try:
         result = _evaluate(spec, fn(ctx), profile)
     except McpKicadError as exc:
@@ -107,7 +114,10 @@ def _execute(
     except Exception as exc:  # um check quebrado não derruba os outros
         err = f"{type(exc).__name__}: {exc}"
         result = CheckResult(spec.id, spec.stage, "ERROR", spec.gate, spec.kind, error=err)
-    mutated = ctx.snapshot.digest() != before
+    try:
+        mutated = ctx.snapshot.digest() != before
+    except OSError as exc:  # arquivo ilegível depois do check: trata como mutação
+        return _unverifiable(spec, exc, start, result.error), True
     if mutated:
         msg = str(SnapshotMutated(f"o check '{spec.id}' alterou os arquivos do snapshot"))
         if result.error:
@@ -116,6 +126,17 @@ def _execute(
         result = CheckResult(spec.id, spec.stage, "ERROR", "block", spec.kind, error=msg)
     result.duration_s = time.monotonic() - start
     return result, mutated
+
+
+def _unverifiable(
+    spec: CheckSpec, exc: OSError, start: float, check_error: str = ""
+) -> CheckResult:
+    msg = str(SnapshotMutated(f"integridade do snapshot não verificável em '{spec.id}': {exc}"))
+    if check_error:
+        msg += f" (erro do check: {check_error})"
+    res = CheckResult(spec.id, spec.stage, "ERROR", "block", spec.kind, error=msg)
+    res.duration_s = time.monotonic() - start
+    return res
 
 
 def run_validate(
@@ -135,7 +156,7 @@ def run_validate(
 ) -> RunResult:
     """Valida um projeto. `checks` substitui implementações por id (testes).
 
-    `restrict_out` (usado pela tool MCP) exige que `out` fique dentro da pasta do projeto.
+    `restrict_out` (usado pela tool MCP) exige que `out` fique sob `<projeto>/.mcp-kicad/`.
     """
     if profile not in PROFILES:
         raise ValidateGraphInvalid(f"perfil '{profile}' inválido (use {', '.join(PROFILES)})")
@@ -158,11 +179,16 @@ def run_validate(
         overrides.append({"source": "project", "skip": skip})
     registry = _registry(graph, checks)
     excluded = _selection(graph, until, only, skip)
-    base = Path(out).expanduser().resolve() if out else pro.parent / ".mcp-kicad" / "validate"
-    if out and restrict_out and not base.is_relative_to(pro.parent):
-        raise ValidateGraphInvalid(
-            f"out deve ficar dentro do diretório do projeto ({pro.parent}): {base}"
-        )
+    mk_dir = pro.parent / ".mcp-kicad"
+    base = (Path(out).expanduser() if out else mk_dir / "validate").resolve()
+    if restrict_out and (
+        not base.is_relative_to(mk_dir) or ".git" in base.relative_to(mk_dir).parts
+    ):
+        raise OutputOutsideProject(f"out deve ficar dentro de {mk_dir} (e fora de .git): {base}")
+    if not out:  # o padrão nunca segue link plantado no projeto (CLI e tool)
+        for planted in (mk_dir, mk_dir / "validate"):
+            if planted.is_symlink():
+                raise OutputOutsideProject(f"{planted} é link simbólico: saída recusada")
 
     snapshot = Snapshot.create(pro.parent, exclude=[base.resolve()])  # saídas anteriores ficam fora
     try:
@@ -261,7 +287,10 @@ def _gate_reason(spec, gate, failed_stage, failed_strict, results) -> tuple[str,
 def _new_run_dir(base: Path, started: datetime, project_hash: str) -> Path:
     name = f"{started:%Y%m%dT%H%M%SZ}-{project_hash[:8]}"
     runs = base / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
+    base.mkdir(parents=True, exist_ok=True)
+    if runs.is_symlink():
+        raise OutputOutsideProject(f"{runs} é link simbólico: saída recusada")
+    runs.mkdir(exist_ok=True)
     for n in range(1, 1000):
         candidate = runs / (name if n == 1 else f"{name}-{n}")
         try:

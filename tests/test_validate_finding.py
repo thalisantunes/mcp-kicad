@@ -26,6 +26,7 @@ VIOLATION = {
         ("exclusion", "P1", None),
         ("ignore", "P1", None),
         ("info", "P1", "P3"),
+        ("fatal", "P1", "P2"),
     ],
 )
 def test_map_severity(kicad, warning_as, expected) -> None:
@@ -81,3 +82,48 @@ def test_from_dict_roundtrip_and_overrides() -> None:
         Finding.from_dict([])
     with pytest.raises(ValueError):
         Finding.from_dict({"severity": "P0", "title": "t", "locator": "x"})
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        {"refs": [1, 2]},
+        {"refs": "R1"},
+        {"nets": [None]},
+        {"layer": 3},
+        {"sheet": ["a"]},
+        {"x_mm": "1"},
+        {"y_mm": True},
+    ],
+)
+def test_finding_validates_locator_types(locator) -> None:
+    with pytest.raises(ValueError, match="locator"):
+        Finding("a/1", "P0", "t", locator=locator)
+
+
+def test_finding_validates_title_type_and_accepts_good_locator() -> None:
+    with pytest.raises(ValueError, match="title"):
+        Finding("a/1", "P0", 5)  # type: ignore[arg-type]
+    Finding("a/1", "P0", "t", locator={"refs": ["R1"], "x_mm": 1, "y_mm": 2.5, "layer": None})
+
+
+def test_unknown_kicad_severity_becomes_p2_with_note() -> None:
+    f = from_kicad("pcb.drc", 1, {"type": "k", "severity": "fatal", "description": "d"})
+    assert f is not None and f.severity == "P2" and "desconhecida" in f.detail
+    ok = from_kicad("pcb.drc", 1, {"type": "k", "severity": "error", "description": "d"})
+    assert ok is not None and "desconhecida" not in ok.detail
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), 10**400])
+def test_non_finite_coordinates_are_rejected(bad) -> None:
+    for key in ("x_mm", "y_mm"):
+        with pytest.raises(ValueError, match="finito"):
+            Finding("a/001", "P2", "t", locator={key: bad})
+
+
+@pytest.mark.parametrize("field", ["detail", "evidence", "rule", "suggested_action"])
+def test_text_fields_must_be_str_and_none_becomes_empty(field) -> None:
+    assert getattr(Finding.from_dict({"severity": "P2", "title": "t", field: None}), field) == ""
+    for bad in (5, ["x"], {"a": 1}):
+        with pytest.raises(ValueError, match=field):
+            Finding.from_dict({"severity": "P2", "title": "t", field: bad})

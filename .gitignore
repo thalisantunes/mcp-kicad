@@ -25,3 +25,9 @@ _autosave-*
 
 # handoffs de sessão (locais)
 tickets/
+
+# relatórios locais de revisão (ferramenta do revisor)
+.local-ultrareview/
+
+# cobertura
+.coverage

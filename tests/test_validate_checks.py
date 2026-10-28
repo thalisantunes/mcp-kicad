@@ -165,3 +165,42 @@ def test_fab_gerbers_detects_missing_layers_and_drill(ctx, monkeypatch) -> None:
     shutil.rmtree(ctx.run_dir)
     monkeypatch.setattr(ck.jlcpcb, "fab_layers", lambda pcb: ["F.Cu", "B.Cu", "Edge.Cuts"])
     assert ck.fab_gerbers(ctx).findings == []
+
+
+def test_fab_rules_compares_severity_and_multiplicity(ctx, fake_cli) -> None:
+    item = {"uuid": "u1", "description": "Track", "pos": {"x": 1, "y": 2}}
+    base = {"type": "clearance", "severity": "warning", "description": "folga", "items": [item]}
+    same_but_error = {**base, "severity": "error"}
+    other_item = {**base, "items": [item, {"uuid": "u2", "pos": {"x": 3, "y": 4}}]}
+    ctx.shared["drc"] = {"violations": [base]}
+    fab = {"violations": [base, base, same_but_error, other_item]}
+
+    def run(args, *, check=True, **kw):
+        out = Path(args[args.index("--output") + 1])
+        out.write_text(json.dumps(fab))
+        return ck.kicad_cli.CliResult(5, "", "")
+
+    ck.kicad_cli.run = run  # restaurado pelo monkeypatch de fake_cli
+    out = ck.fab_rules(ctx)
+    # 1 igual ao baseline; a 2ª duplicata, a de outra severidade e a de outros itens são novas
+    assert len(out.findings) == 3
+
+
+def test_fab_rules_appends_profile_to_existing_project_rules(ctx, fake_cli, monkeypatch) -> None:
+    ctx.pcb.with_suffix(".kicad_dru").write_text("(version 1)\n(rule projeto)\n")
+    seen = {}
+    original = ck.kicad_cli.run
+
+    def spy(args, **kw):
+        dru = Path(args[-1]).with_suffix(".kicad_dru")
+        if dru.exists():
+            seen["dru"] = dru.read_text()  # a última chamada é a do clone
+        return original(args, **kw)
+
+    monkeypatch.setattr(ck.kicad_cli, "run", spy)
+    monkeypatch.setattr(ck.jlcpcb, "rules_text", lambda p: "(version 1)\n(rule jlc)\n")
+    ck.pcb_drc(ctx)
+    ck.fab_rules(ctx)
+    assert "(rule projeto)" in seen["dru"] and "(rule jlc)" in seen["dru"]
+    assert seen["dru"].count("(version 1)") == 1
+    assert ctx.pcb.with_suffix(".kicad_dru").read_text() == "(version 1)\n(rule projeto)\n"

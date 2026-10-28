@@ -38,10 +38,13 @@ class CheckSpec:
         cid = data.get("id")
         if not isinstance(cid, str) or not _ID_RE.match(cid):
             raise ValidateGraphInvalid(f"id de check inválido: {cid!r}")
+        requires = data.get("requires", ())
+        if not (isinstance(requires, list | tuple) and all(isinstance(r, str) for r in requires)):
+            raise ValidateGraphInvalid(f"check '{cid}': 'requires' deve ser lista de textos")
         spec = cls(
             id=cid,
             stage=str(data.get("stage", "")),
-            requires=tuple(data.get("requires", ())),
+            requires=tuple(requires),
             gate=data.get("gate", "block"),
             kind=data.get("kind", "builtin"),
             title=data.get("title", ""),

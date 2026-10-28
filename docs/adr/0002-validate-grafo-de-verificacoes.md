@@ -60,11 +60,11 @@ Princípios que a decisão precisa respeitar:
    relatório parcial marcado.
 8. **Plugins de revisão** (`validate/plugins/`): interface `Reviewer.run(snapshot, context) -> list[Finding]`; um
    adaptador genérico `llm_json` que envia o prompt a um comando local (`claude -p`, `ollama run`) e exige o bloco JSON
-   do schema, com até duas rodadas de reparo. O comando roda em sessão própria (o grupo inteiro é encerrado no timeout ou
+   do schema, com até duas rodadas de reparo (`--repeat N`, consenso, previsto para v2). O comando roda em sessão própria (o grupo inteiro é encerrado no timeout ou
    interrupção), com ambiente mínimo (`PATH`, `HOME`, `LANG` e o que a config do usuário listar em `env_passthrough`). Sem plugin configurado, S5 é `SKIPPED`,
    não falha. Nenhum plugin é ativado por padrão.
 9. Novos erros em `errors.py`: `MK-VAL-001` grafo ou configuração inválidos (inclui config de projeto que tenta plugin/`command` ou mexer em check builtin), `MK-VAL-002` snapshot alterado por um check ou com link para fora do projeto,
-   `MK-VAL-003` plugin sem bloco JSON válido.
+   `MK-VAL-003` plugin sem bloco JSON válido, `MK-VAL-004` saída fora do diretório do projeto (ou via link simbólico).
 
 ## Confiança da configuração
 
@@ -88,7 +88,7 @@ O projeto sob validação não é confiável: um `.mcp-kicad/validate.json` num 
 - Um único "a placa está pronta?" com gate, reproduzível em CI (`junit.xml`, exit codes) e sem rede.
 - Achados com localizador e evidência tornam útil qualquer modelo, inclusive pequeno e local, porque a resposta é
   verificável e o builtin continua sendo a fonte de verdade.
-- Reuso direto de `kicad_cli._read_report`/`_summarize` e dos perfis JLCPCB; nada duplicado entre CLI e IPC.
+- Reuso de `kicad_cli.erc_report`/`drc_report`, `pcb_export_*` e dos perfis JLCPCB; nada duplicado entre CLI e IPC.
 
 **Custos**
 - Cópia temporária do projeto por execução (projetos com STEP pesados: excluir `3dmodels/` do snapshot por padrão).
@@ -126,3 +126,9 @@ O projeto sob validação não é confiável: um `.mcp-kicad/validate.json` num 
 - **`--skip` de check bloqueante gera INCOMPLETO** (exit 3), como `--until`/`--only`.
 - **`latest` é publicado de forma atômica** (`latest.tmp-<pid>` + `os.replace`); se não der (p.ex. já existe um
   diretório real), vira aviso no relatório e o run segue.
+- **`latest` só é substituído se for link simbólico ou não existir**: arquivo comum ou diretório do usuário com esse
+  nome é preservado e vira aviso no relatório.
+- **Guarda de `.mcp-kicad` simbólico vale também na CLI**: sem `--out`, `.mcp-kicad` e `.mcp-kicad/validate` simbólicos
+  são recusados (`MK-VAL-004`) sempre, independente de `restrict_out`.
+- **`out` da tool MCP fica sob `<projeto>/.mcp-kicad/`** (não só dentro do projeto): a raiz do projeto e qualquer
+  caminho com componente `.git` são recusados (`MK-VAL-004`). A CLI segue livre com `--out`.

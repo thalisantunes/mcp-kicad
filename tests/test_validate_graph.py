@@ -227,3 +227,24 @@ def test_load_user_config_sources(tmp_path, monkeypatch, user_config) -> None:
     monkeypatch.setenv("MCP_KICAD_REVIEWERS", str(tmp_path / "nao-existe.json"))
     with pytest.raises(ValidateGraphInvalid, match="inexistente"):
         load_user_config()
+
+
+def test_non_string_id_and_bad_field_types_are_mk_val_001(tmp_path) -> None:
+    for bad in ({"id": 5}, {"id": ["x"]}, {"id": "pcb.drc", "requires": 5}):
+        with pytest.raises(ValidateGraphInvalid, match="MK-VAL-001"):
+            build_graph({"checks": [bad]})
+    with pytest.raises(ValidateGraphInvalid, match="MK-VAL-001"):
+        build_graph(None, {"checks": [{"id": 5}]})
+    with pytest.raises(ValidateGraphInvalid, match="MK-VAL-001"):
+        build_graph({"checks": [{"id": "x.y", "stage": "S5", "requires": 5}]})
+
+
+def test_fab_profile_and_requires_must_be_strings_mk_val_001(tmp_path) -> None:
+    path = tmp_path / CONFIG_RELPATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"fab_profile": []}))
+    with pytest.raises(ValidateGraphInvalid, match="MK-VAL-001"):
+        load_project_config(tmp_path)
+    for bad in ([[]], "intake.tools", [5]):
+        with pytest.raises(ValidateGraphInvalid, match="MK-VAL-001"):
+            build_graph({"checks": [{"id": "pcb.drc", "requires": bad}]})

@@ -72,7 +72,7 @@ def test_cli_without_command_serves(monkeypatch) -> None:
 
 def test_tool_returns_verdict_run_dir_and_next_actions(fake_project, tmp_path, monkeypatch):
     _patch(monkeypatch, {"sch.erc": [Finding("sch.erc/001", "P0", "ruim")]})
-    out = fake_project.parent / "saida"
+    out = fake_project.parent / ".mcp-kicad" / "saida"
     result = server.validate(str(fake_project), out=str(out), only=["S1"])
     assert result["verdict"] == "FAIL" and result["run_dir"].startswith(str(out))
     assert result["next_actions"][0]["finding_id"] == "sch.erc/001"
@@ -83,7 +83,7 @@ def test_tool_refuses_out_outside_the_project_but_cli_allows_it(
 ) -> None:
     _patch(monkeypatch)
     for bad in (tmp_path / "fora", fake_project.parent / ".." / "fora"):
-        with pytest.raises(ToolError, match=r"MK-VAL-001.*dentro do diretório"):
+        with pytest.raises(ToolError, match=r"MK-VAL-004.*dentro de"):
             server.validate(str(fake_project), out=str(bad))
         assert not bad.exists()
     assert cli.main(["validate", str(fake_project), "--out", str(tmp_path / "fora")]) == 0
@@ -111,3 +111,19 @@ def test_cli_rerun_hint_preserves_options_and_quotes(
 def test_tool_turns_config_errors_into_tool_error(fake_project) -> None:
     with pytest.raises(ToolError, match="MK-VAL-001"):
         server.validate(str(fake_project), gate="nope")
+
+
+def test_cli_unexpected_oserror_is_short_message_and_exit_2(fake_project, capsys) -> None:
+    assert cli.main(["validate", str(fake_project), "--out", "/proc/nope"]) == 2
+    err = capsys.readouterr().err
+    assert "OSError" in err or "Error" in err
+    assert "Traceback" not in err and len(err.splitlines()) == 1
+
+
+def test_cli_non_mcp_exception_is_exit_2(fake_project, capsys, monkeypatch) -> None:
+    def boom(*a, **k):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr("mcp_kicad.validate.run_validate", boom)
+    assert cli.main(["validate", str(fake_project)]) == 2
+    assert "RuntimeError: bug" in capsys.readouterr().err

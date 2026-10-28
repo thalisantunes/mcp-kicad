@@ -81,7 +81,7 @@ def load_project_config(project_dir: Path) -> dict[str, Any]:
             f"Permitido: {sorted(_PROJECT_KEYS)}"
         )
     profile = data.get("fab_profile")
-    if profile is not None and profile not in jlcpcb.PROFILES:
+    if profile is not None and not (isinstance(profile, str) and profile in jlcpcb.PROFILES):
         raise ValidateGraphInvalid(
             f"{path}: fab_profile {profile!r} desconhecido (use {', '.join(jlcpcb.PROFILES)})"
         )
@@ -99,6 +99,8 @@ def _apply(
     if not isinstance(entry, dict) or "id" not in entry:
         raise ValidateGraphInvalid(f"entrada de checks inválida: {entry!r}")
     cid = entry["id"]
+    if not isinstance(cid, str):
+        raise ValidateGraphInvalid(f"id de check deve ser texto: {cid!r}")
     overrides.append({"source": source, **entry})
     if entry.get("enabled") is False:
         if cid not in specs:
@@ -110,13 +112,18 @@ def _apply(
         }
     merged = specs[cid].to_dict() if cid in specs else {}
     merged.update({k: v for k, v in entry.items() if k != "enabled"})
-    return {**specs, cid: CheckSpec.from_dict(merged)}
+    try:
+        return {**specs, cid: CheckSpec.from_dict(merged)}
+    except (TypeError, ValueError) as exc:  # ex.: requires: 5, gate: [] vindos do JSON
+        raise ValidateGraphInvalid(f"check '{cid}': entrada inválida ({exc})") from exc
 
 
 def _guard_project_entry(entry: Any, specs: dict[str, CheckSpec]) -> None:
     if not isinstance(entry, dict) or "id" not in entry:
         raise ValidateGraphInvalid(f"entrada de checks inválida: {entry!r}")
     cid = entry["id"]
+    if not isinstance(cid, str):
+        raise ValidateGraphInvalid(f"id de check deve ser texto: {cid!r}")
     if "command" in entry or entry.get("kind") == "agent":
         raise ValidateGraphInvalid(
             f"check '{cid}': a config do projeto não pode declarar 'command' nem 'kind: agent'. "
@@ -141,9 +148,7 @@ def _guard_project_entry(entry: Any, specs: dict[str, CheckSpec]) -> None:
         )
 
 
-def build_graph(
-    user: dict[str, Any] | None = None, project: dict[str, Any] | None = None
-) -> Graph:
+def build_graph(user: dict[str, Any] | None = None, project: dict[str, Any] | None = None) -> Graph:
     """Grafo padrão + config do usuário (livre) + config do projeto (restrita).
 
     `graph.overrides` lista cada entrada aceita, com a origem, para o relatório.

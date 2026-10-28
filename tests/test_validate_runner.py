@@ -7,7 +7,12 @@ import os
 
 import pytest
 
-from mcp_kicad.errors import InvalidPath, SnapshotMutated, ValidateGraphInvalid
+from mcp_kicad.errors import (
+    InvalidPath,
+    OutputOutsideProject,
+    SnapshotMutated,
+    ValidateGraphInvalid,
+)
 from mcp_kicad.validate import run_validate
 from mcp_kicad.validate.checks import CheckOutput
 from mcp_kicad.validate.config import CONFIG_RELPATH
@@ -358,11 +363,11 @@ def test_project_config_defaults_fab_profile_until_skip_and_are_recorded(
 
 
 def test_restrict_out_confines_output_to_the_project(fake_project, tmp_path) -> None:
-    inside = fake_project.parent / "saida"
+    inside = fake_project.parent / ".mcp-kicad" / "saida"
     run = run_validate(fake_project, out=inside, restrict_out=True, checks=registry())
     assert run.run_dir.is_relative_to(inside.resolve())
     for bad in (tmp_path / "fora", fake_project.parent / ".." / "fora", "/tmp"):
-        with pytest.raises(ValidateGraphInvalid, match=r"MK-VAL-001.*dentro do diretório"):
+        with pytest.raises(OutputOutsideProject, match=r"MK-VAL-004.*dentro de"):
             run_validate(fake_project, out=bad, restrict_out=True, checks=registry())
     run_validate(fake_project, out=tmp_path / "livre", checks=registry())  # CLI: livre
 
@@ -371,7 +376,7 @@ def test_symlinked_out_escaping_the_project_is_refused(fake_project, tmp_path) -
     outside = tmp_path / "alvo"
     outside.mkdir()
     (fake_project.parent / "link").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValidateGraphInvalid, match="dentro do diretório"):
+    with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
         run_validate(
             fake_project, out=fake_project.parent / "link" / "x", restrict_out=True,
             checks=registry(),
@@ -385,3 +390,109 @@ def test_symlink_to_outside_file_is_refused_mk_val_002(fake_project, tmp_path) -
     (fake_project.parent / "leak.txt").symlink_to(secret)
     with pytest.raises(SnapshotMutated, match=r"MK-VAL-002.*fora do projeto"):
         go(fake_project, tmp_path)
+
+
+def test_check_that_plants_a_symlink_outside_is_a_mutation_and_blocks_the_run(
+    fake_project, tmp_path
+) -> None:
+    calls: list[str] = []
+
+    def planter(ctx):
+        (ctx.snapshot.root / "ln").symlink_to(tmp_path)
+        return CheckOutput()
+
+    reg = registry(calls=calls)
+    reg["sch.erc"] = planter
+    run = run_validate(fake_project, out=tmp_path / "o", checks=reg, gate="full")
+    by_id = {r.id: r for r in run.results}
+    assert by_id["sch.erc"].status == "ERROR" and "MK-VAL-002" in by_id["sch.erc"].error
+    assert by_id["pcb.drc"].status == "SKIPPED" and "snapshot alterado" in by_id["pcb.drc"].reason
+    assert "pcb.drc" not in calls and run.exit_code == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignora permissões")
+def test_unreadable_file_after_check_is_a_mutation_error(fake_project, tmp_path) -> None:
+    def locker(ctx):
+        ctx.pcb.chmod(0)
+        return CheckOutput()
+
+    reg = registry()
+    reg["sch.erc"] = locker
+    run = run_validate(fake_project, out=tmp_path / "o", checks=reg, gate="full")
+    by_id = {r.id: r for r in run.results}
+    assert by_id["sch.erc"].status == "ERROR" and "MK-VAL-002" in by_id["sch.erc"].error
+    assert by_id["pcb.drc"].status == "SKIPPED" and by_id["pcb.drc"].blocked_by == ["sch.erc"]
+    assert run.exit_code == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignora permissões")
+def test_unreadable_file_before_check_skips_the_check_and_taints(fake_project, tmp_path) -> None:
+    calls: list[str] = []
+
+    def locker(ctx):  # roda em intake.files; o próximo check já encontra o arquivo ilegível
+        ctx.pcb.chmod(0)
+        return CheckOutput()
+
+    reg = registry(calls=calls)
+    reg["intake.files"] = locker
+    run = run_validate(fake_project, out=tmp_path / "o", checks=reg, gate="full")
+    by_id = {r.id: r for r in run.results}
+    assert by_id["intake.files"].status == "ERROR"
+    assert "sch.erc" not in calls and by_id["sch.erc"].status == "SKIPPED"
+
+
+def test_symlinked_default_base_is_refused_when_restricted(fake_project, tmp_path) -> None:
+    outside = tmp_path / "alvo"
+    outside.mkdir()
+    (fake_project.parent / ".mcp-kicad").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
+        run_validate(fake_project, restrict_out=True, checks=registry())
+    assert not any(outside.iterdir())
+
+
+def test_symlinked_runs_directory_is_refused(fake_project, tmp_path) -> None:
+    outside = tmp_path / "alvo"
+    outside.mkdir()
+    base = tmp_path / "out"
+    base.mkdir()
+    (base / "runs").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
+        run_validate(fake_project, out=base, checks=registry())
+    assert not any(outside.iterdir())
+
+
+def test_restrict_out_requires_mcp_kicad_dir_and_refuses_root_and_git(
+    fake_project, monkeypatch
+) -> None:
+    root = fake_project.parent
+    monkeypatch.chdir(root)
+    for bad in (".", root, root / "saida", root / ".git" / "x", root / ".mcp-kicad" / ".git"):
+        with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
+            run_validate(fake_project, out=bad, restrict_out=True, checks=registry())
+    assert not (root / ".git").exists() and not (root / "saida").exists()
+
+
+def test_existing_latest_file_or_dir_is_preserved_with_warning(fake_project, tmp_path) -> None:
+    for kind in ("file", "dir"):
+        out = tmp_path / kind
+        out.mkdir()
+        latest = out / "latest"
+        latest.write_text("meu") if kind == "file" else (latest.mkdir(), (latest / "x").touch())
+        run = run_validate(fake_project, out=out, checks=registry())
+        assert not latest.is_symlink() and any("não atualizado" in w for w in run.warnings)
+        assert (latest.read_text() == "meu") if kind == "file" else (latest / "x").exists()
+
+
+def test_default_out_refuses_planted_symlinks_without_restrict_out(fake_project, tmp_path):
+    outside = tmp_path / "alvo"
+    outside.mkdir()
+    mk = fake_project.parent / ".mcp-kicad"
+    mk.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
+        run_validate(fake_project, checks=registry())
+    mk.unlink()
+    mk.mkdir()
+    (mk / "validate").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(OutputOutsideProject, match="MK-VAL-004"):
+        run_validate(fake_project, checks=registry())
+    assert not any(outside.iterdir())

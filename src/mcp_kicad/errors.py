@@ -100,3 +100,9 @@ class PluginOutputInvalid(McpKicadError):
     """Plugin de revisão (S5) falhou ou não devolveu um bloco JSON válido."""
 
     code = "MK-VAL-003"
+
+
+class OutputOutsideProject(McpKicadError):
+    """Saída do `validate` fora do diretório do projeto (ou via link simbólico plantado)."""
+
+    code = "MK-VAL-004"
