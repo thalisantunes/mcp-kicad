@@ -342,6 +342,55 @@ def test_pcb_drc_failure_carries_returncode_and_stderr(tmp_path, monkeypatch) ->
     assert "Failed to load board: boom" in str(exc_info.value)
 
 
+def test_drc_report_returns_the_raw_report_and_builds_args(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    raw = {"violations": [{"type": "x"}], "schematic_parity": [{"type": "p"}]}
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        Path(args[args.index("--output") + 1]).write_text(json.dumps(raw), encoding="utf-8")
+        return kicad_cli.CliResult(5, "", "")
+
+    monkeypatch.setattr(kicad_cli, "run", fake_run)
+    board = _board(tmp_path)
+
+    assert kicad_cli.drc_report(board, tmp_path / "a.json") == raw  # cru, sem resumo
+    assert "--schematic-parity" in calls[0] and "--severity-all" in calls[0]
+    kicad_cli.drc_report(board, tmp_path / "b.json", parity=False, all_severities=False)
+    assert "--schematic-parity" not in calls[1] and "--severity-error" in calls[1]
+    assert calls[1][-1] == str(board)
+
+
+def test_erc_report_returns_the_raw_report_and_fails_on_other_codes(tmp_path, monkeypatch) -> None:
+    raw = {"sheets": [{"path": "/", "violations": []}]}
+    _fake_report_run(monkeypatch, raw)
+    assert kicad_cli.erc_report(tmp_path / "x.kicad_sch", tmp_path / "e.json") == raw
+
+    _fake_report_run(monkeypatch, {}, returncode=3, stderr="boom")
+    with pytest.raises(KicadCliFailed, match=r"ERC falhou \(3\)"):
+        kicad_cli.erc_report(tmp_path / "x.kicad_sch", tmp_path / "e.json")
+
+
+def test_pcb_drc_and_sch_erc_delegate_to_the_report_functions(tmp_path, monkeypatch) -> None:
+    seen: dict[str, tuple] = {}
+
+    def drc(pcb, out, parity=True, all_severities=True):
+        seen["drc"] = (parity, all_severities)
+        return {"violations": []}
+
+    def erc(sch, out, all_severities=True):
+        seen["erc"] = (all_severities,)
+        return {"sheets": []}
+
+    monkeypatch.setattr(kicad_cli, "drc_report", drc)
+    monkeypatch.setattr(kicad_cli, "erc_report", erc)
+    kicad_cli.pcb_drc(_board(tmp_path), all_severities=True)
+    sch = tmp_path / "s.kicad_sch"
+    sch.write_text("x", encoding="utf-8")
+    kicad_cli.sch_erc(sch)
+    assert seen == {"drc": (False, True), "erc": (False,)}
+
+
 def test_sch_erc_flattens_violations_of_all_sheets(tmp_path, monkeypatch) -> None:
     schematic = tmp_path / "board.kicad_sch"
     schematic.write_text("(kicad_sch)", encoding="utf-8")

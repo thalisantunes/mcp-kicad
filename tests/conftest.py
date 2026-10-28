@@ -31,6 +31,31 @@ def pytest_collection_modifyitems(config, items) -> None:
                 item.add_marker(skip)
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_config(tmp_path_factory, monkeypatch):
+    """Nenhum teste lê o reviewers.json real do usuário (HOME fica intacto: o kicad-cli usa)."""
+    from mcp_kicad.validate import config
+
+    monkeypatch.delenv(config.USER_CONFIG_ENV, raising=False)
+    monkeypatch.setattr(
+        config, "USER_CONFIG_DEFAULT", tmp_path_factory.mktemp("cfg") / "reviewers.json"
+    )
+
+
+@pytest.fixture
+def user_config(tmp_path, monkeypatch):
+    """`write(dict)`: grava a config do usuário e aponta MCP_KICAD_REVIEWERS para ela."""
+    import json
+
+    def write(data) -> Path:
+        path = tmp_path / "user-reviewers.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setenv("MCP_KICAD_REVIEWERS", str(path))
+        return path
+
+    return write
+
+
 @pytest.fixture
 def demo_project(tmp_path: Path):
     """Devolve `copy(nome)`: cópia gravável de um projeto de demo do KiCad.
@@ -59,3 +84,13 @@ def server_params() -> StdioServerParameters:
         args=["-m", "mcp_kicad"],
         env={"PYTHONDONTWRITEBYTECODE": "1"},
     )
+
+
+@pytest.fixture
+def fake_project(tmp_path: Path) -> Path:
+    """Projeto mínimo (arquivos vazios) para o `validate` com checks fakes injetados."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    for suffix in (".kicad_pro", ".kicad_sch", ".kicad_pcb"):
+        (root / f"demo{suffix}").write_text("x", encoding="utf-8")
+    return root / "demo.kicad_pro"

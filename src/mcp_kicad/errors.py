@@ -78,3 +78,31 @@ class InternalError(McpKicadError):
     """
 
     code = "MK-INT-001"
+
+
+class ValidateGraphInvalid(McpKicadError):
+    """Grafo de checks ou configuração do `validate` inválidos.
+
+    Cobre ciclo, id duplicado/desconhecido, estágio inválido, JSON de override
+    ilegível e flags inválidas (perfil, gate, until/only/skip).
+    """
+
+    code = "MK-VAL-001"
+
+
+class SnapshotMutated(McpKicadError):
+    """Snapshot do `validate` alterado por um check ou inválido (link para fora do projeto)."""
+
+    code = "MK-VAL-002"
+
+
+class PluginOutputInvalid(McpKicadError):
+    """Plugin de revisão (S5) falhou ou não devolveu um bloco JSON válido."""
+
+    code = "MK-VAL-003"
+
+
+class OutputOutsideProject(McpKicadError):
+    """Saída do `validate` fora do diretório do projeto (ou via link simbólico plantado)."""
+
+    code = "MK-VAL-004"
